@@ -317,7 +317,7 @@ function ExchangeTab({
           <div className="rounded-[24px] border border-dashed border-slate-200 bg-slate-50 p-8 text-center">
             <HelpCircle className="mx-auto h-10 w-10 text-slate-300" />
             <p className="mt-3 text-sm font-semibold text-slate-600">No transactions found</p>
-            <p className="text-xs text-slate-400">Try another filter or search.</p>
+            <p className="mt-1 text-xs text-slate-400">Try another filter or search.</p>
           </div>
         ) : (
           groupedHistory.map((group) => (

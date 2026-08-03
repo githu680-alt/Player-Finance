@@ -101,7 +101,7 @@ function PlayersTab({
         </button>
       </div>
 
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {([
           { key: 'all', label: 'All Players', subtitle: 'Show every player' },
           { key: 'daily', label: 'Daily', subtitle: 'Tap to filter players' },
@@ -118,7 +118,7 @@ function PlayersTab({
               key={key}
               type="button"
               onClick={() => setActivePeriod(key)}
-              className={`rounded-3xl border p-4 text-left transition-all ${isSelected ? 'bg-blue-600 border-blue-600 text-white shadow-lg' : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'}`}
+              className={`rounded-3xl border p-3.5 text-left transition-all ${isSelected ? 'border-blue-600 bg-blue-600 text-white shadow-sm' : 'border-slate-200 bg-white text-slate-700 hover:bg-slate-50'}`}
             >
               <p className="text-[10px] uppercase tracking-[0.24em] font-semibold mb-2">{label}</p>
               <p className="text-2xl font-bold">{count}</p>
@@ -144,7 +144,7 @@ function PlayersTab({
 
       {/* Grid of cards */}
       {filteredPlayers.length === 0 ? (
-        <div className="text-center py-20 text-slate-400 border border-dashed border-slate-200 rounded-2xl bg-white p-6 shadow-3xs">
+        <div className="rounded-2xl border border-dashed border-slate-200 bg-white p-8 text-center text-slate-400 shadow-sm">
           <HelpCircle className="h-10 w-10 text-slate-300 stroke-1 mx-auto mb-2" />
           <p className="text-sm font-medium">{activePeriod === 'all' ? 'No players found' : 'No active players found'}</p>
           <p className="text-xs">{activePeriod === 'all' ? 'Try a different search term' : 'Try a different active period or search term'}</p>

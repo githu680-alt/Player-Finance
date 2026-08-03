@@ -52,7 +52,7 @@ export default function HomeTab({
   const agencySummaries = getAgencySummaries(players, transactions);
 
   return (
-    <div className="space-y-6 pb-24">
+    <div className="space-y-5 pb-24">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -61,18 +61,18 @@ export default function HomeTab({
         <div className="flex items-center space-x-3">
           <button
             onClick={() => setHideBalances(!hideBalances)}
-            className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
+            className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-800"
           >
             {hideBalances ? <EyeOff className="h-5 w-5" /> : <Eye className="h-5 w-5" />}
           </button>
-          <button className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer">
+          <button className="rounded-xl border border-slate-200 bg-white p-2 text-slate-500 transition-colors hover:bg-slate-50 hover:text-slate-800">
             <Settings className="h-5 w-5" />
           </button>
         </div>
       </div>
 
       {/* Total Balance Card */}
-      <div className="bg-[#7df43d] text-slate-900 rounded-2xl p-6 shadow-md border border-[#10100f] relative overflow-hidden">
+      <div className="relative overflow-hidden rounded-[24px] border border-slate-900/10 bg-[#7df43d] p-6 text-slate-900 shadow-sm">
         <div className="absolute right-0 top-0 translate-x-8 -translate-y-8 w-32 h-32 bg-blue-600/10 rounded-full blur-2xl" />
         <div className="absolute left-1/2 bottom-0 -translate-x-1/2 translate-y-12 w-48 h-48 bg-emerald-600/10 rounded-full blur-3xl" />
 
@@ -86,7 +86,7 @@ export default function HomeTab({
               {hideBalances ? '****** MMK' : formatMMK(monthlyNet)} {currentMonthStr}
             </p>
           </div>
-          <button className="p-2 bg-slate-950/5 hover:bg-slate-950/10 rounded-xl text-slate-800 hover:text-slate-950 transition-all cursor-pointer">
+          <button className="rounded-xl bg-slate-950/5 p-2 text-slate-800 transition-all hover:bg-slate-950/10 hover:text-slate-950">
             <SlidersHorizontal className="h-4.5 w-4.5" />
           </button>
         </div>
@@ -148,7 +148,7 @@ export default function HomeTab({
           </button>
         </div>
 
-        <div className="space-y-3.5">
+        <div className="space-y-3">
           {/* Income */}
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-3">
@@ -200,7 +200,9 @@ export default function HomeTab({
         </div>
 
         {agencySummaries.length === 0 ? (
-          <div className="text-center py-6 text-xs text-slate-400">No agency data available.</div>
+          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-xs text-slate-400">
+            No agency data available.
+          </div>
         ) : (
           <div className="space-y-4">
             {agencySummaries.slice(0, 3).map((agency, index) => {
