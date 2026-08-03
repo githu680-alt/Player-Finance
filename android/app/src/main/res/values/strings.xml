@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Player Finance</string>
+    <string name="title_activity_main">Player Finance</string>
+    <string name="package_name">com.playerfinance.app</string>
+    <string name="custom_url_scheme">com.playerfinance.app</string>
+    <string name="default_web_client_id">753906579477-tptlk5qc3i7ibg9s68hinp09kdgahm5t.apps.googleusercontent.com</string>
+</resources>
