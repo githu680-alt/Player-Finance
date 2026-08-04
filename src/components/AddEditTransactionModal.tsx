@@ -11,8 +11,10 @@ interface AddEditTransactionModalProps {
   players: Player[];
   defaultPlayerId?: string;
   defaultAccountId?: string;
+  defaultPaymentAccountId?: string;
   accounts: Account[];
   paymentAccounts: PaymentAccount[];
+  ownerPrivateAccounts?: Array<{ id: string; name: string; type?: string }>;
   initialQuickAction?: 'deposit' | 'withdraw' | 'exchange' | 'transfer';
 }
 
@@ -32,8 +34,10 @@ export default function AddEditTransactionModal({
   players,
   defaultPlayerId,
   defaultAccountId,
+  defaultPaymentAccountId,
   accounts,
   paymentAccounts,
+  ownerPrivateAccounts = [],
   initialQuickAction,
 }: AddEditTransactionModalProps) {
   const [transactionType, setTransactionType] = useState<TransactionType>('player');
@@ -41,8 +45,7 @@ export default function AddEditTransactionModal({
   const [category, setCategory] = useState<TransactionCategory>('Integral Bought');
   const [ownerCategory, setOwnerCategory] = useState<OwnerCategory>('transfer');
   const [ownerTransferDirection, setOwnerTransferDirection] = useState<'owner_to_business' | 'business_to_owner'>('owner_to_business');
-  const [ownerPhoneNumber, setOwnerPhoneNumber] = useState('');
-  const [showOwnerPhoneInput, setShowOwnerPhoneInput] = useState(false);
+  const [ownerAccountId, setOwnerAccountId] = useState('');
   const [billName, setBillName] = useState('');
   const [transferToAccount, setTransferToAccount] = useState<AccountType>('');
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -56,6 +59,10 @@ export default function AddEditTransactionModal({
   const [date, setDate] = useState('');
   const [time, setTime] = useState('00:00');
   const [remark, setRemark] = useState('');
+  const [staffSign, setStaffSign] = useState('');
+  const [staffSignInput, setStaffSignInput] = useState('');
+  const [staffSignOptions, setStaffSignOptions] = useState<string[]>([]);
+  const [showStaffSignInput, setShowStaffSignInput] = useState(false);
   const [error, setError] = useState('');
 
   const filteredPlayers = players.filter((p) => {
@@ -67,11 +74,65 @@ export default function AddEditTransactionModal({
     );
   });
 
+  const persistStaffSignState = (nextSigns: string[], nextLastUsed: string) => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem('player-finance-staff-signs', JSON.stringify(nextSigns));
+    window.localStorage.setItem('player-finance-last-staff-sign', nextLastUsed);
+  };
+
+  const persistStaffSignForTransaction = (transactionId: string, sign: string) => {
+    if (typeof window === 'undefined' || !transactionId || !sign) return;
+    try {
+      const existing = JSON.parse(window.localStorage.getItem('player-finance-staff-sign-map') || '{}');
+      existing[transactionId] = sign;
+      window.localStorage.setItem('player-finance-staff-sign-map', JSON.stringify(existing));
+    } catch {
+      window.localStorage.setItem('player-finance-staff-sign-map', JSON.stringify({ [transactionId]: sign }));
+    }
+  };
+
+  const saveStaffSign = (value: string) => {
+    const normalized = value.trim().toUpperCase();
+    if (!normalized) return;
+
+    const nextSigns = Array.from(new Set([normalized, ...staffSignOptions.filter((item) => item !== normalized)]));
+    setStaffSignOptions(nextSigns);
+    setStaffSign(normalized);
+    setStaffSignInput('');
+    setShowStaffSignInput(false);
+    persistStaffSignState(nextSigns, normalized);
+  };
+
+  const ownerAccountOptions = Array.isArray(ownerPrivateAccounts) ? ownerPrivateAccounts : [];
+
+  useEffect(() => {
+    if (!isOpen) {
+      setOwnerAccountId('');
+    }
+  }, [isOpen]);
+
+  const filteredPaymentAccounts = paymentAccounts
+    .filter((pa) => {
+      if (playerId) {
+        return pa.playerId === playerId;
+      }
+      return true;
+    })
+    .sort((a, b) => {
+      const left = (a.accountName?.trim() || a.type?.trim() || '').toLowerCase();
+      const right = (b.accountName?.trim() || b.type?.trim() || '').toLowerCase();
+      return left.localeCompare(right);
+    });
+
   const saveTransaction = async (transaction: Omit<Transaction, 'id'>, editId?: string) => {
     setIsSubmitting(true);
     setError('');
     try {
-      await onSave(transaction, editId);
+      const savedId = await onSave(transaction, editId);
+      const resolvedId = editTransaction?.id || savedId || editId || `tx_${Date.now()}`;
+      if (staffSign.trim()) {
+        persistStaffSignForTransaction(resolvedId, staffSign.trim().toUpperCase());
+      }
       setShowSuccess(true);
       window.setTimeout(() => {
         setShowSuccess(false);
@@ -85,14 +146,6 @@ export default function AddEditTransactionModal({
     }
   };
 
-  const filteredPaymentAccounts = paymentAccountNumber.trim().length >= 3
-    ? paymentAccounts.filter((pa) =>
-        pa.playerId === playerId &&
-        pa.type === account &&
-        pa.accountNumber.includes(paymentAccountNumber.trim())
-      )
-    : [];
-
   useEffect(() => {
     const defaultAccId = defaultAccountId || accounts.find((a) => a.id === 'Cash' || a.name.toLowerCase() === 'cash')?.id || accounts[0]?.id || '';
 
@@ -104,13 +157,12 @@ export default function AddEditTransactionModal({
       setCategory(editTransaction.category || 'Integral Bought');
       setOwnerCategory(normalizedOwnerCategory as OwnerCategory);
       setOwnerTransferDirection(editTransaction.ownerTransferDirection || 'owner_to_business');
+      setOwnerAccountId(editTransaction.ownerAccountId || '');
       setBillName(editTransaction.billName || '');
       setAmount(editTransaction.amount.toString());
       setAccount(editTransaction.account || defaultAccId);
       setPaymentAccountId(editTransaction.paymentAccountId || '');
       setPaymentAccountNumber(editTransaction.paymentAccountNumber || '');
-      setOwnerPhoneNumber(editTransaction.paymentAccountNumber || '');
-      setShowOwnerPhoneInput(Boolean(editTransaction.paymentAccountNumber));
       setTransferToAccount(editTransaction.toAccount || '');
 
       const txDate = editTransaction.date;
@@ -119,6 +171,18 @@ export default function AddEditTransactionModal({
       setDate(datePart);
       setTime(timePart);
       setRemark(editTransaction.remark || '');
+
+      try {
+        const storedMap = JSON.parse(window.localStorage.getItem('player-finance-staff-sign-map') || '{}');
+        const storedSign = storedMap[editTransaction.id];
+        if (storedSign) {
+          setStaffSign(storedSign);
+        } else {
+          setStaffSign('');
+        }
+      } catch {
+        setStaffSign('');
+      }
     } else {
       if (initialQuickAction === 'deposit') {
         setTransactionType('player');
@@ -157,14 +221,22 @@ export default function AddEditTransactionModal({
       }
       setPaymentAccountId('');
       setPaymentAccountNumber('');
-      setOwnerPhoneNumber('');
-      setShowOwnerPhoneInput(false);
+      setOwnerAccountId('');
       setTransferToAccount('');
       if (defaultAccountId && !editTransaction) {
         const selectedAccount = accounts.find((acc) => acc.id === defaultAccountId);
         if (selectedAccount) {
           setAccount(selectedAccount.id);
         }
+      }
+
+      const matchingPaymentAccount = paymentAccounts.find((pa) => pa.id === defaultPaymentAccountId);
+      if (matchingPaymentAccount) {
+        setPaymentAccountId(matchingPaymentAccount.id);
+        setPaymentAccountNumber(matchingPaymentAccount.accountNumber?.trim() || '');
+      } else {
+        setPaymentAccountId('');
+        setPaymentAccountNumber('');
       }
 
       const localNow = new Date();
@@ -177,21 +249,33 @@ export default function AddEditTransactionModal({
       setDate(`${year}-${month}-${day}`);
       setTime(`${hours}:${minutes}`);
       setRemark('');
+      const storedSigns = JSON.parse(window.localStorage.getItem('player-finance-staff-signs') || '[]');
+      const lastUsedStaffSign = window.localStorage.getItem('player-finance-last-staff-sign') || '';
+      setStaffSignOptions(storedSigns);
+      setStaffSign(lastUsedStaffSign);
+      setShowStaffSignInput(false);
+      setStaffSignInput('');
     }
     setError('');
-  }, [editTransaction, isOpen, players, defaultPlayerId, defaultAccountId, accounts, initialQuickAction]);
+  }, [editTransaction, isOpen, players, defaultPlayerId, defaultAccountId, defaultPaymentAccountId, accounts, paymentAccounts, initialQuickAction]);
 
   useEffect(() => {
-    if (!paymentAccountNumber) {
-      setPaymentAccountId('');
+    if (!paymentAccountId) {
+      if (paymentAccountNumber) {
+        setPaymentAccountNumber('');
+      }
       return;
     }
 
     const selectedAccount = paymentAccounts.find((pa) => pa.id === paymentAccountId);
-    if (selectedAccount && selectedAccount.accountNumber !== paymentAccountNumber) {
+    if (!selectedAccount) {
       setPaymentAccountId('');
+      setPaymentAccountNumber('');
+      return;
     }
-  }, [paymentAccountNumber, paymentAccountId, paymentAccounts]);
+
+    setPaymentAccountNumber(selectedAccount.accountNumber?.trim() || '');
+  }, [paymentAccountId, paymentAccounts]);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -211,6 +295,10 @@ export default function AddEditTransactionModal({
       setError('Time is required');
       return;
     }
+
+    const selectedPaymentAccount = paymentAccountId ? paymentAccounts.find((pa) => pa.id === paymentAccountId) : undefined;
+    const paymentAccountTypeValue = selectedPaymentAccount?.type?.trim() || selectedPaymentAccount?.accountName?.trim() || '';
+    const paymentAccountNumberValue = paymentAccountNumber.trim() || undefined;
 
     if (transactionType === 'transfer') {
       if (!account) {
@@ -234,6 +322,9 @@ export default function AddEditTransactionModal({
           amount: numAmount,
           account,
           toAccount: transferToAccount,
+          paymentAccountId: selectedPaymentAccount?.id || undefined,
+          paymentAccountType: paymentAccountTypeValue || undefined,
+          paymentAccountNumber: paymentAccountNumberValue,
           date: `${date}T${time}`,
           remark: remark.trim(),
         },
@@ -260,9 +351,9 @@ export default function AddEditTransactionModal({
           category,
           amount: numAmount,
           account,
-          paymentAccountId: undefined,
-          paymentAccountType: account,
-          paymentAccountNumber: undefined,
+          paymentAccountId: selectedPaymentAccount?.id || undefined,
+          paymentAccountType: paymentAccountTypeValue || undefined,
+          paymentAccountNumber: paymentAccountNumberValue,
           date: `${date}T${time}`,
           remark: remark.trim(),
         },
@@ -272,6 +363,14 @@ export default function AddEditTransactionModal({
     }
 
     if (transactionType === 'owner') {
+      if (!account) {
+        setError('Select the business account');
+        return;
+      }
+      if (!ownerAccountId) {
+        setError('Select the owner account');
+        return;
+      }
       saveTransaction(
         {
           transactionType: 'owner',
@@ -282,7 +381,10 @@ export default function AddEditTransactionModal({
           account,
           ownerCategory: 'transfer',
           ownerTransferDirection,
-          paymentAccountNumber: paymentAccountNumber.trim() || undefined,
+          ownerAccountId,
+          paymentAccountId: selectedPaymentAccount?.id || undefined,
+          paymentAccountType: paymentAccountTypeValue || undefined,
+          paymentAccountNumber: paymentAccountNumberValue,
           date: `${date}T${time}`,
           remark: remark.trim(),
         },
@@ -305,6 +407,9 @@ export default function AddEditTransactionModal({
         amount: numAmount,
         account,
         billName: billName.trim(),
+        paymentAccountId: selectedPaymentAccount?.id || undefined,
+        paymentAccountType: paymentAccountTypeValue || undefined,
+        paymentAccountNumber: paymentAccountNumberValue,
         date: `${date}T${time}`,
         remark: remark.trim(),
       },
@@ -348,7 +453,7 @@ export default function AddEditTransactionModal({
 
             <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
               {error && (
-                <div className="rounded-lg bg-red-50 p-3 text-xs font-medium text-red-600 border border-red-100 border-l-4 border-l-red-500">
+                <div role="alert" aria-live="polite" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs font-medium text-red-700 border-l-4 border-l-red-500">
                   {error}
                 </div>
               )}
@@ -428,7 +533,8 @@ export default function AddEditTransactionModal({
                         key={opt.value}
                         type="button"
                         onClick={() => setTransactionType(opt.value)}
-                        className={`rounded-xl px-2 py-2 text-sm font-semibold transition-all ${
+                        disabled={isSubmitting}
+                        className={`rounded-xl px-2 py-2 text-sm font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-60 ${
                           isSelected ? 'bg-slate-900 text-white shadow-sm' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
                         }`}
                       >
@@ -443,7 +549,7 @@ export default function AddEditTransactionModal({
                 <div className="space-y-3">
                   <div>
                     <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Player *</label>
-                    <button type="button" onClick={() => setIsPlayerPickerOpen(true)} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-left hover:bg-slate-100 transition-all">
+                    <button type="button" onClick={() => setIsPlayerPickerOpen(true)} disabled={isSubmitting} className="w-full rounded-lg border border-slate-200 bg-slate-50 px-4 py-3 text-left hover:bg-slate-100 transition-all disabled:cursor-not-allowed disabled:opacity-70">
                       {playerId ? (() => {
                         const p = players.find((x) => x.id === playerId);
                         return p ? `${p.playerId} (${p.nickName})` : 'Select Player';
@@ -457,7 +563,7 @@ export default function AddEditTransactionModal({
                       {PLAYER_CATEGORIES.map((cat) => {
                         const isSelected = category === cat;
                         return (
-                          <button key={cat} type="button" onClick={() => setCategory(cat)} className={`py-2.5 text-xs font-medium rounded-lg border transition-all ${isSelected ? (cat === 'Integral Bought' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-red-50 text-red-700 border-red-300') : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'}`}>
+                          <button key={cat} type="button" onClick={() => setCategory(cat)} disabled={isSubmitting} className={`py-2.5 text-xs font-medium rounded-lg border transition-all disabled:cursor-not-allowed disabled:opacity-70 ${isSelected ? (cat === 'Integral Bought' ? 'bg-emerald-50 text-emerald-700 border-emerald-300' : 'bg-red-50 text-red-700 border-red-300') : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'}`}>
                             {cat}
                           </button>
                         );
@@ -488,6 +594,39 @@ export default function AddEditTransactionModal({
                       <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="e.g. 10000" min="1" step="any" className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-850 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all" />
                     </div>
                   </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Payment Account</label>
+                    <select
+                      value={paymentAccountId}
+                      onChange={(e) => {
+                        const selected = paymentAccounts.find((pa) => pa.id === e.target.value);
+                        setPaymentAccountId(e.target.value);
+                        setPaymentAccountNumber(selected?.accountNumber?.trim() || '');
+                      }}
+                      disabled={isSubmitting}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      <option value="">Select payment account</option>
+                      {filteredPaymentAccounts.map((pa) => (
+                        <option key={pa.id} value={pa.id}>
+                          {pa.accountName?.trim() || pa.type || 'Payment account'} • {pa.accountNumber}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Phone Number</label>
+                    <input
+                      type="text"
+                      value={paymentAccountNumber}
+                      onChange={(e) => setPaymentAccountNumber(e.target.value)}
+                      placeholder="09xxxxxxxx"
+                      disabled={isSubmitting}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-70"
+                    />
+                  </div>
                 </div>
               )}
 
@@ -496,7 +635,7 @@ export default function AddEditTransactionModal({
                   <div>
                     <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Owner Type *</label>
                     <div className="grid grid-cols-1 gap-2">
-                      <button type="button" onClick={() => setOwnerCategory('transfer')} className={`py-2.5 text-xs font-medium rounded-lg border transition-all ${ownerCategory === 'transfer' ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'}`}>
+                      <button type="button" onClick={() => setOwnerCategory('transfer')} disabled={isSubmitting} className={`py-2.5 text-xs font-medium rounded-lg border transition-all disabled:cursor-not-allowed disabled:opacity-70 ${ownerCategory === 'transfer' ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'}`}>
                         Transfer
                       </button>
                     </div>
@@ -509,7 +648,7 @@ export default function AddEditTransactionModal({
                         { value: 'owner_to_business', label: 'Owner → Business' },
                         { value: 'business_to_owner', label: 'Business → Owner' },
                       ].map((opt) => (
-                        <button key={opt.value} type="button" onClick={() => setOwnerTransferDirection(opt.value as 'owner_to_business' | 'business_to_owner')} className={`py-2.5 text-xs font-medium rounded-lg border transition-all ${ownerTransferDirection === opt.value ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'}`}>
+                        <button key={opt.value} type="button" onClick={() => setOwnerTransferDirection(opt.value as 'owner_to_business' | 'business_to_owner')} disabled={isSubmitting} className={`py-2.5 text-xs font-medium rounded-lg border transition-all disabled:cursor-not-allowed disabled:opacity-70 ${ownerTransferDirection === opt.value ? 'bg-blue-50 text-blue-700 border-blue-300' : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'}`}>
                           {opt.label}
                         </button>
                       ))}
@@ -531,6 +670,21 @@ export default function AddEditTransactionModal({
                   </div>
 
                   <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Owner Account *</label>
+                    <div className="relative rounded-lg shadow-xs">
+                      <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                        <Wallet className="h-4 w-4 text-slate-400" />
+                      </div>
+                      <select value={ownerAccountId} onChange={(e) => setOwnerAccountId(e.target.value)} className="block w-full pl-10 pr-10 py-2.5 bg-slate-50 text-slate-850 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white appearance-none cursor-pointer transition-all">
+                        <option value="">Select owner account</option>
+                        {ownerAccountOptions.map((acc) => (
+                          <option key={acc.id} value={acc.id}>{acc.name}</option>
+                        ))}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div>
                     <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Amount (MMK) *</label>
                     <div className="relative rounded-lg shadow-xs">
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
@@ -541,15 +695,36 @@ export default function AddEditTransactionModal({
                   </div>
 
                   <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Payment Account</label>
+                    <select
+                      value={paymentAccountId}
+                      onChange={(e) => {
+                        const selected = paymentAccounts.find((pa) => pa.id === e.target.value);
+                        setPaymentAccountId(e.target.value);
+                        setPaymentAccountNumber(selected?.accountNumber?.trim() || '');
+                      }}
+                      disabled={isSubmitting}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      <option value="">Select payment account</option>
+                      {filteredPaymentAccounts.map((pa) => (
+                        <option key={pa.id} value={pa.id}>
+                          {pa.accountName?.trim() || pa.type || 'Payment account'} • {pa.accountNumber}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
                     <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Phone Number</label>
-                    <div className="flex items-center gap-2">
-                      <button type="button" onClick={() => setShowOwnerPhoneInput((prev) => !prev)} className="rounded-full border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600">
-                        {showOwnerPhoneInput ? 'Hide' : 'Add'}
-                      </button>
-                      {showOwnerPhoneInput && (
-                        <input type="text" value={ownerPhoneNumber} onChange={(e) => setOwnerPhoneNumber(e.target.value)} placeholder="09xxxxxxxx" className="flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm" />
-                      )}
-                    </div>
+                    <input
+                      type="text"
+                      value={paymentAccountNumber}
+                      onChange={(e) => setPaymentAccountNumber(e.target.value)}
+                      placeholder="09xxxxxxxx"
+                      disabled={isSubmitting}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-70"
+                    />
                   </div>
                 </div>
               )}
@@ -562,7 +737,7 @@ export default function AddEditTransactionModal({
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                         <Receipt className="h-4 w-4 text-slate-400" />
                       </div>
-                      <input type="text" value={billName} onChange={(e) => setBillName(e.target.value)} placeholder="Phone Bill, Electricity, Shopping..." className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-850 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all" />
+                      <input type="text" value={billName} onChange={(e) => setBillName(e.target.value)} placeholder="Phone Bill, Electricity, Shopping..." disabled={isSubmitting} className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-850 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all disabled:cursor-not-allowed disabled:opacity-70" />
                     </div>
                   </div>
 
@@ -589,6 +764,39 @@ export default function AddEditTransactionModal({
                       <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="e.g. 10000" min="1" step="any" className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-850 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all" />
                     </div>
                   </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Payment Account</label>
+                    <select
+                      value={paymentAccountId}
+                      onChange={(e) => {
+                        const selected = paymentAccounts.find((pa) => pa.id === e.target.value);
+                        setPaymentAccountId(e.target.value);
+                        setPaymentAccountNumber(selected?.accountNumber?.trim() || '');
+                      }}
+                      disabled={isSubmitting}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      <option value="">Select payment account</option>
+                      {filteredPaymentAccounts.map((pa) => (
+                        <option key={pa.id} value={pa.id}>
+                          {pa.accountName?.trim() || pa.type || 'Payment account'} • {pa.accountNumber}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Phone Number</label>
+                    <input
+                      type="text"
+                      value={paymentAccountNumber}
+                      onChange={(e) => setPaymentAccountNumber(e.target.value)}
+                      placeholder="09xxxxxxxx"
+                      disabled={isSubmitting}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-70"
+                    />
+                  </div>
                 </div>
               )}
 
@@ -609,7 +817,7 @@ export default function AddEditTransactionModal({
                   </div>
 
                   <div className="flex justify-center">
-                    <button type="button" onClick={swapTransferAccounts} className="rounded-full border border-slate-200 bg-slate-50 p-2 text-slate-500 transition hover:bg-slate-100">
+                    <button type="button" onClick={swapTransferAccounts} disabled={isSubmitting} className="rounded-full border border-slate-200 bg-slate-50 p-2 text-slate-500 transition hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70">
                       <ArrowLeftRight className="h-4 w-4" />
                     </button>
                   </div>
@@ -620,7 +828,7 @@ export default function AddEditTransactionModal({
                       <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
                         <Wallet className="h-4 w-4 text-slate-400" />
                       </div>
-                      <select value={transferToAccount} onChange={(e) => setTransferToAccount(e.target.value as AccountType)} className="block w-full pl-10 pr-10 py-2.5 bg-slate-50 text-slate-850 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white appearance-none cursor-pointer transition-all">
+                      <select value={transferToAccount} onChange={(e) => setTransferToAccount(e.target.value as AccountType)} disabled={isSubmitting} className="block w-full pl-10 pr-10 py-2.5 bg-slate-50 text-slate-850 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white appearance-none cursor-pointer transition-all disabled:cursor-not-allowed disabled:opacity-70">
                         <option value="">Select destination</option>
                         {accounts.map((acc) => (
                           <option key={acc.id} value={acc.id}>{acc.name}</option>
@@ -638,6 +846,40 @@ export default function AddEditTransactionModal({
                       <input type="number" value={amount} onChange={(e) => setAmount(e.target.value)} placeholder="e.g. 10000" min="1" step="any" className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-850 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all" />
                     </div>
                   </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Payment Account</label>
+                    <select
+                      value={paymentAccountId}
+                      onChange={(e) => {
+                        const selected = paymentAccounts.find((pa) => pa.id === e.target.value);
+                        setPaymentAccountId(e.target.value);
+                        setPaymentAccountNumber(selected?.accountNumber?.trim() || '');
+                      }}
+                      disabled={isSubmitting}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      <option value="">Select payment account</option>
+                      {filteredPaymentAccounts.map((pa) => (
+                        <option key={pa.id} value={pa.id}>
+                          {pa.accountName?.trim() || pa.type || 'Payment account'} • {pa.accountNumber}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Phone Number</label>
+                    <input
+                      type="text"
+                      value={paymentAccountNumber}
+                      onChange={(e) => setPaymentAccountNumber(e.target.value)}
+                      placeholder="09xxxxxxxx"
+                      disabled={isSubmitting}
+                      className="w-full rounded-lg border border-slate-200 bg-slate-50 px-3 py-2.5 text-sm disabled:cursor-not-allowed disabled:opacity-70"
+                    />
+                  </div>
+
                 </div>
               )}
 
@@ -667,10 +909,68 @@ export default function AddEditTransactionModal({
                       type="time"
                       value={time}
                       onChange={(e) => setTime(e.target.value)}
-                      className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-850 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all cursor-pointer"
+                      disabled={isSubmitting}
+                      className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-850 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all cursor-pointer disabled:cursor-not-allowed disabled:opacity-70"
                     />
                   </div>
                 </div>
+              </div>
+
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+                <div className="flex items-start justify-between gap-2">
+                  <div>
+                    <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-slate-500">Staff sign</p>
+                    <p className="mt-1 text-xs text-slate-500">Pick a saved sign or add a new one.</p>
+                  </div>
+                  <div className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500 shadow-sm">
+                    {staffSign || 'None'}
+                  </div>
+                </div>
+
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {staffSignOptions.map((option) => (
+                    <button
+                      key={option}
+                      type="button"
+                      onClick={() => {
+                        setStaffSign(option);
+                        persistStaffSignState(staffSignOptions, option);
+                      }}
+                      disabled={isSubmitting}
+                      className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-70 ${staffSign === option ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'}`}
+                    >
+                      {option}
+                    </button>
+                  ))}
+                  <button
+                    type="button"
+                    onClick={() => setShowStaffSignInput((current) => !current)}
+                    disabled={isSubmitting}
+                    className="rounded-full border border-dashed border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition-all hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+                  >
+                    + Add New
+                  </button>
+                </div>
+
+                {showStaffSignInput && (
+                  <div className="mt-3 flex gap-2">
+                    <input
+                      value={staffSignInput}
+                      onChange={(e) => setStaffSignInput(e.target.value.toUpperCase())}
+                      placeholder="Type sign"
+                      disabled={isSubmitting}
+                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => saveStaffSign(staffSignInput)}
+                      disabled={isSubmitting || !staffSignInput.trim()}
+                      className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-70"
+                    >
+                      Save
+                    </button>
+                  </div>
+                )}
               </div>
 
               <div>
@@ -684,13 +984,14 @@ export default function AddEditTransactionModal({
                     onChange={(e) => setRemark(e.target.value)}
                     placeholder="Enter remark notes..."
                     rows={2}
-                    className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-850 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all resize-none"
+                    disabled={isSubmitting}
+                    className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-850 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all resize-none disabled:cursor-not-allowed disabled:opacity-70"
                   />
                 </div>
               </div>
 
               <div className="flex items-center justify-end space-x-3 pt-4 border-t border-slate-100">
-                <button type="button" onClick={onClose} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 rounded-lg transition-colors border border-slate-200">
+                <button type="button" onClick={onClose} disabled={isSubmitting} className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 rounded-lg transition-colors border border-slate-200 disabled:cursor-not-allowed disabled:opacity-70">
                   Cancel
                 </button>
                 <button type="submit" disabled={isSubmitting} className="px-5 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-70">

@@ -24,18 +24,19 @@ const [accountName, setAccountName] = useState('');
 const [accountNumber, setAccountNumber] = useState('');
 const [note, setNote] = useState('');
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
-  if (!isOpen) return;
+    if (!isOpen) return;
 
-  const listener = CapacitorApp.addListener("backButton", () => {
-    onClose();
-  });
+    const listener = CapacitorApp.addListener("backButton", () => {
+      onClose();
+    });
 
-  return () => {
-    listener.then(l => l.remove());
-  };
-}, [isOpen, onClose]);
+    return () => {
+      listener.then((l) => l.remove());
+    };
+  }, [isOpen, onClose]);
 
   useEffect(() => {
   if (editAccount) {
@@ -55,6 +56,7 @@ const [note, setNote] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
   e.preventDefault();
+  setError('');
 
   if (!type.trim()) {
     setError("Account type is required");
@@ -66,6 +68,7 @@ const [note, setNote] = useState('');
     return;
   }
 
+  setIsSubmitting(true);
   onSave(
     {
       playerId,
@@ -77,7 +80,10 @@ const [note, setNote] = useState('');
     editAccount?.id
   );
 
-  onClose();
+  window.setTimeout(() => {
+    setIsSubmitting(false);
+    onClose();
+  }, 120);
 };
 
   return (
@@ -117,68 +123,78 @@ const [note, setNote] = useState('');
             {/* Form */}
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               {error && (
-                <div className="rounded-lg bg-red-50 p-3 text-xs font-medium text-red-600 border border-red-100">
+                <div role="alert" aria-live="polite" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs font-medium text-red-700">
                   {error}
                 </div>
               )}
 
               {/* Account Type */}
 <div>
-  <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
+  <label htmlFor="account-type" className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
     Account Type *
   </label>
 
   <input
+    id="account-type"
     type="text"
     value={type}
     onChange={(e) => setType(e.target.value)}
     placeholder="Wave / KBZ / AYA"
-    className="block w-full p-3 rounded-lg border border-slate-200"
+    disabled={isSubmitting}
+    aria-invalid={Boolean(error && !type.trim())}
+    className="block w-full p-3 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 placeholder-slate-400 text-sm disabled:bg-slate-100 disabled:text-slate-400"
   />
 </div>
 
 {/* Account Name */}
 <div>
-  <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
+  <label htmlFor="account-name" className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
     Account Name
   </label>
 
   <input
+    id="account-name"
     type="text"
     value={accountName}
     onChange={(e) => setAccountName(e.target.value)}
     placeholder="Ko Aung"
-    className="block w-full p-3 rounded-lg border border-slate-200"
+    disabled={isSubmitting}
+    className="block w-full p-3 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 placeholder-slate-400 text-sm disabled:bg-slate-100 disabled:text-slate-400"
   />
 </div>
 
 {/* Account Number */}
 <div>
-  <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
+  <label htmlFor="account-number" className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
     Account Number *
   </label>
 
   <input
+    id="account-number"
     type="text"
     value={accountNumber}
     onChange={(e) => setAccountNumber(e.target.value)}
     placeholder="09123456789"
-    className="block w-full p-3 rounded-lg border border-slate-200"
+    disabled={isSubmitting}
+    aria-invalid={Boolean(error && !accountNumber.trim())}
+    className="block w-full p-3 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 placeholder-slate-400 text-sm disabled:bg-slate-100 disabled:text-slate-400"
   />
 </div>
 
 {/* Note */}
 <div>
-  <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
+  <label htmlFor="account-note" className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
     Note
   </label>
 
   <textarea
+    id="account-note"
     value={note}
     onChange={(e) => setNote(e.target.value)}
     rows={3}
     placeholder="Optional"
-    className="block w-full p-3 rounded-lg border border-slate-200"
+    disabled={isSubmitting}
+    className="block w-full p-3 rounded-lg border border-slate-200 bg-slate-50 text-slate-800 placeholder-slate-400 text-sm disabled:bg-slate-100 disabled:text-slate-400"
   />
 </div>
 
@@ -187,15 +203,17 @@ const [note, setNote] = useState('');
                 <button
                   type="button"
                   onClick={onClose}
-                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 rounded-lg transition-colors border border-slate-200"
+                  disabled={isSubmitting}
+                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 rounded-lg transition-colors border border-slate-200 disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors cursor-pointer"
+                  disabled={isSubmitting}
+                  className="px-5 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  Save Account
+                  {isSubmitting ? 'Saving...' : 'Save Account'}
                 </button>
               </div>
             </form>

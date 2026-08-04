@@ -1301,8 +1301,12 @@ useEffect(() => {
               players={players}
               transactions={transactions}
               accounts={accounts}
+              paymentAccounts={paymentAccounts}
               onNavigateToTab={handleNavigateToTab}
               onOpenAccountManagement={() => setIsAccountManagementOpen(true)}
+              onAddTransaction={(accountId) => handleOpenAddTransaction(accountId)}
+              onEditTransaction={handleOpenEditTransaction}
+              onDeleteTransaction={handleDeleteTransaction}
             />
           )}
 

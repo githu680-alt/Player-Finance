@@ -220,6 +220,7 @@ export function normalizeTransaction(tx: Partial<Transaction> & { id: string }):
     paymentAccountNumber: tx.paymentAccountNumber,
     ownerCategory: normalizedOwnerCategory,
     ownerTransferDirection: tx.ownerTransferDirection,
+    ownerAccountId: tx.ownerAccountId,
     billName: tx.billName?.trim() || (transactionType === 'bill' ? 'Bill Payment' : ''),
     date: tx.date || '',
     remark: tx.remark || '',
@@ -411,15 +412,23 @@ export function getAccountBalances(transactions: Transaction[], accounts?: Accou
     .forEach((t) => {
       if (balances[t.account] !== undefined) {
         if (t.transactionType === 'owner') {
-          if (t.ownerCategory === 'income' || t.ownerCategory === 'money_in') {
+          const resolvedCategory = t.ownerCategory || (t.category === 'Owner Transfer' ? 'transfer' : undefined);
+          if (resolvedCategory === 'income' || resolvedCategory === 'money_in') {
             balances[t.account] += t.amount;
-          } else if (t.ownerCategory === 'expense' || t.ownerCategory === 'money_out') {
+          } else if (resolvedCategory === 'expense' || resolvedCategory === 'money_out') {
             balances[t.account] -= t.amount;
-          } else if (t.ownerCategory === 'transfer') {
-            if (t.ownerTransferDirection === 'business_to_owner') {
+          } else if (resolvedCategory === 'transfer' || t.category === 'Owner Transfer') {
+            const direction = t.ownerTransferDirection || 'owner_to_business';
+            if (direction === 'business_to_owner') {
               balances[t.account] -= t.amount;
+              if (t.ownerAccountId && balances[t.ownerAccountId] !== undefined) {
+                balances[t.ownerAccountId] += t.amount;
+              }
             } else {
               balances[t.account] += t.amount;
+              if (t.ownerAccountId && balances[t.ownerAccountId] !== undefined) {
+                balances[t.ownerAccountId] -= t.amount;
+              }
             }
           }
         } else if (t.transactionType === 'bill') {

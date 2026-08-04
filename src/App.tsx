@@ -111,6 +111,11 @@ export default function App() {
   const [isOwnerPrivateOpen, setIsOwnerPrivateOpen] = useState(false);
   const [isOwnerUnlocked, setIsOwnerUnlocked] = useState(false);
   const [ownerPrivateData, setOwnerPrivateData] = useState<{ accounts: any[]; transactions: any[] } | null>(null);
+  const ownerPrivateAccountOptions = (ownerPrivateData?.accounts || []).map((account: any) => ({
+    id: account?.id || '',
+    name: account?.name || account?.accountName || account?.type || 'Unnamed owner account',
+    type: account?.type,
+  }));
   const ownerUnlockTimer = useRef<number | null>(null);
   const [ownerPasscode, setOwnerPasscode] = useState<string | null>(null);
   const [pendingRecoveredData, setPendingRecoveredData] = useState<{ accounts: any[]; transactions: any[] } | null>(null);
@@ -276,10 +281,16 @@ export default function App() {
  
     try {
       const decrypted = await decryptJson(passcode, encrypted);
-      return {
+      const ownerData = {
         accounts: (decrypted.accounts || []) as PrivateAccount[],
         transactions: (decrypted.transactions || []) as PrivateTransaction[],
       };
+      setOwnerPrivateData(ownerData);
+      console.log('DECRYPTED =', decrypted);
+      console.log('DECRYPTED.accounts =', decrypted.accounts);
+      console.log('DECRYPTED.transactions =', decrypted.transactions);
+      console.log('RETURN ownerData =', ownerData);
+      return ownerData;
     } catch (err) {
       console.warn('Unable to decrypt owner private data with current passcode', err);
       return { accounts: [], transactions: [] };
@@ -295,6 +306,7 @@ export default function App() {
   const [editingTransaction, setEditingTransaction] = useState<Transaction | undefined>(undefined);
   const [preselectedPlayerIdForTx, setPreselectedPlayerIdForTx] = useState<string | undefined>(undefined);
   const [defaultAccountIdForTx, setDefaultAccountIdForTx] = useState<string | undefined>(undefined);
+  const [defaultPaymentAccountIdForTx, setDefaultPaymentAccountIdForTx] = useState<string | undefined>(undefined);
   const [quickActionPreset, setQuickActionPreset] = useState<'deposit' | 'withdraw' | 'exchange' | 'transfer' | undefined>(undefined);
 
   // 5. Auth State change handler & real-time sync with migration
@@ -775,13 +787,23 @@ useEffect(() => {
   
 
   // 9. Transaction CRUD Actions
-  const handleOpenAddTransaction = useCallback((playerId?: string, preset?: 'deposit' | 'withdraw' | 'exchange' | 'transfer', accountId?: string) => {
+  const handleOpenAddTransaction = useCallback((playerId?: string, preset?: 'deposit' | 'withdraw' | 'exchange' | 'transfer', accountId?: string, preferredPaymentAccountName?: string) => {
     setEditingTransaction(undefined);
     setPreselectedPlayerIdForTx(playerId);
     setDefaultAccountIdForTx(accountId);
+
+    const resolvedPaymentAccount = preferredPaymentAccountName?.trim()
+      ? paymentAccounts.find((pa) => {
+          const normalizedName = preferredPaymentAccountName.trim().toLowerCase();
+          const values = [pa.type, pa.accountName, pa.accountNumber].filter(Boolean) as string[];
+          return values.some((value) => value.trim().toLowerCase() === normalizedName || value.trim().toLowerCase().includes(normalizedName));
+        })
+      : undefined;
+
+    setDefaultPaymentAccountIdForTx(resolvedPaymentAccount?.id);
     setQuickActionPreset(preset);
     setIsTxModalOpen(true);
-  }, []);
+  }, [paymentAccounts]);
 
   const handleOpenEditTransaction = useCallback((tx: Transaction) => {
     setEditingTransaction(tx);
@@ -798,16 +820,14 @@ useEffect(() => {
     const pendingAccountOps: OfflineOperation[] = [];
 
     if (
-      txData.transactionType === 'player' &&
+      txData.transactionType !== 'transfer' &&
       !paymentAccountId &&
-      txData.paymentAccountNumber?.trim() &&
-      txData.paymentAccountType?.trim()
+      txData.paymentAccountNumber?.trim()
     ) {
       const existing = paymentAccounts.find(
         (pa) =>
-          pa.playerId === txData.playerId &&
-          pa.type === txData.paymentAccountType &&
-          pa.accountNumber === txData.paymentAccountNumber
+          pa.accountNumber === txData.paymentAccountNumber &&
+          (!txData.paymentAccountType?.trim() || pa.type === txData.paymentAccountType)
       );
 
       if (existing) {
@@ -844,9 +864,9 @@ useEffect(() => {
       playerId: txData.transactionType === 'transfer' ? '' : txData.playerId || '',
       playerName: txData.transactionType === 'transfer' ? '' : txData.playerName || '',
       category: txData.transactionType === 'transfer' ? 'Transfer' : txData.category,
-      paymentAccountId: txData.transactionType === 'transfer' ? undefined : paymentAccountId,
-      paymentAccountType: txData.transactionType === 'transfer' ? undefined : txData.paymentAccountType,
-      paymentAccountNumber: txData.transactionType === 'transfer' ? undefined : txData.paymentAccountNumber,
+      paymentAccountId: paymentAccountId,
+      paymentAccountType: txData.paymentAccountType,
+      paymentAccountNumber: txData.paymentAccountNumber,
       toAccount: txData.transactionType === 'transfer' ? txData.toAccount || '' : undefined,
     });
 
@@ -876,23 +896,22 @@ useEffect(() => {
         if (passcode) {
           try {
             const ownerData = await loadLatestOwnerPrivateData(passcode);
-            const accountName = normalizedTransaction.account || 'Unknown';
-            const accountKey = accountName.toLowerCase();
-            let ownerAccount = ownerData.accounts.find((acc) => {
-              const name = acc.name?.toString().toLowerCase() || '';
-              const type = acc.type?.toString().toLowerCase() || '';
-              return name === accountKey || type === accountKey;
-            });
-            const nextAccounts = [...ownerData.accounts];
+            console.log('ownerAccountId =', normalizedTransaction.ownerAccountId);
+            console.log('ownerData.accounts =', ownerData.accounts);
+            console.log(
+              ownerData.accounts.map((a) => ({
+                id: a.id,
+                name: a.name,
+              }))
+            );
+            const selectedOwnerAccount = ownerData.accounts.find((acc) => acc.id === normalizedTransaction.ownerAccountId);
+            console.log('selectedOwnerAccount =', selectedOwnerAccount);
 
-            if (!ownerAccount) {
-              ownerAccount = {
-                id: `priv_acc_${Date.now()}`,
-                name: accountName,
-                type: accountName,
-                baseBalance: 0,
-              };
-              nextAccounts.push(ownerAccount);
+            if (!selectedOwnerAccount) {
+              console.warn('Owner transfer skipped because no matching owner private account was found', {
+                ownerAccountId: normalizedTransaction.ownerAccountId,
+              });
+              return transactionResult;
             }
 
             const privateTx = {
@@ -900,7 +919,7 @@ useEffect(() => {
               date: normalizedTransaction.date,
               type: normalizedTransaction.ownerTransferDirection === 'business_to_owner' ? 'Income' : 'Expense',
               amount: normalizedTransaction.amount,
-              accountId: ownerAccount.id,
+              accountId: selectedOwnerAccount.id,
               remark:
                 normalizedTransaction.ownerTransferDirection === 'business_to_owner'
                   ? 'Received from Business'
@@ -908,7 +927,7 @@ useEffect(() => {
             };
 
             const nextOwnerData = {
-              accounts: nextAccounts,
+              accounts: ownerData.accounts,
               transactions: [privateTx, ...(ownerData.transactions || [])],
             };
 
@@ -1120,6 +1139,10 @@ useEffect(() => {
 
   async function saveOwnerPrivateData(data: { accounts: any[]; transactions: any[] }, passcode: string) {
     if (!user) return;
+
+    console.log('SAVE ownerPrivateData =', data);
+    console.log('SAVE accounts =', data.accounts);
+    console.log('SAVE transactions =', data.transactions);
 
     const payload = { ...data, updatedAt: new Date().toISOString() };
     const enc = await encryptJson(passcode, payload);
@@ -1374,8 +1397,12 @@ useEffect(() => {
               players={players}
               transactions={transactions}
               accounts={accounts}
+              paymentAccounts={paymentAccounts}
               onNavigateToTab={handleNavigateToTab}
               onOpenAccountManagement={() => setIsAccountManagementOpen(true)}
+              onAddTransaction={(accountId, preferredPaymentAccountName) => handleOpenAddTransaction(undefined, undefined, accountId, preferredPaymentAccountName)}
+              onEditTransaction={handleOpenEditTransaction}
+              onDeleteTransaction={handleDeleteTransaction}
             />
           )}
 
@@ -1477,6 +1504,7 @@ useEffect(() => {
           setEditingTransaction(undefined);
           setPreselectedPlayerIdForTx(undefined);
           setDefaultAccountIdForTx(undefined);
+          setDefaultPaymentAccountIdForTx(undefined);
           setQuickActionPreset(undefined);
         }}
         onSave={handleSaveTransaction}
@@ -1484,8 +1512,10 @@ useEffect(() => {
         players={players}
         defaultPlayerId={preselectedPlayerIdForTx}
         defaultAccountId={defaultAccountIdForTx}
+        defaultPaymentAccountId={defaultPaymentAccountIdForTx}
         accounts={accounts}
         paymentAccounts={paymentAccounts}
+        ownerPrivateAccounts={ownerPrivateAccountOptions}
         initialQuickAction={quickActionPreset}
       />
 

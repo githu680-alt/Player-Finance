@@ -45,6 +45,7 @@ export interface Transaction {
   paymentAccountNumber?: string;
   ownerCategory?: OwnerCategory;
   ownerTransferDirection?: OwnerTransferDirection;
+  ownerAccountId?: string;
   billName?: string;
   date: string; // YYYY-MM-DD
   remark: string;

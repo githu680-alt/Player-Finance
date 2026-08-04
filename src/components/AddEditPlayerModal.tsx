@@ -27,6 +27,7 @@ export default function AddEditPlayerModal({
   const [phoneNumber, setPhoneNumber] = useState('');
   const [remark, setRemark] = useState('');
   const [error, setError] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const availableAgencies = useMemo(() => {
     const unique = new Set<string>(agencies.filter(Boolean));
@@ -71,6 +72,8 @@ export default function AddEditPlayerModal({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setError('');
+
     if (!playerId.trim()) {
       setError('Player ID is required');
       return;
@@ -94,6 +97,7 @@ export default function AddEditPlayerModal({
       return;
     }
 
+    setIsSubmitting(true);
     onSave(
       {
         playerId: playerId.trim(),
@@ -104,7 +108,11 @@ export default function AddEditPlayerModal({
       },
       editPlayer?.id
     );
-    onClose();
+
+    window.setTimeout(() => {
+      setIsSubmitting(false);
+      onClose();
+    }, 120);
   };
 
   return (
@@ -144,14 +152,14 @@ export default function AddEditPlayerModal({
             {/* Form */}
             <form onSubmit={handleSubmit} className="p-6 space-y-4">
               {error && (
-                <div className="rounded-lg bg-red-50 p-3 text-xs font-medium text-red-600 border border-red-100">
+                <div role="alert" aria-live="polite" className="rounded-lg border border-red-200 bg-red-50 p-3 text-xs font-medium text-red-700">
                   {error}
                 </div>
               )}
 
               {/* Player ID */}
               <div>
-                <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
+                <label htmlFor="player-id" className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
                   Player ID *
                 </label>
                 <div className="relative rounded-lg shadow-xs">
@@ -159,11 +167,14 @@ export default function AddEditPlayerModal({
                     <User className="h-4 w-4 text-slate-400" />
                   </div>
                   <input
+                    id="player-id"
                     type="text"
                     value={playerId}
                     onChange={(e) => setPlayerId(e.target.value)}
                     placeholder="e.g. Hein40"
-                    disabled={!!editPlayer}
+                    disabled={!!editPlayer || isSubmitting}
+                    aria-invalid={Boolean(error && !playerId.trim())}
+                    aria-describedby={error && !playerId.trim() ? 'player-id-error' : undefined}
                     className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-800 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white disabled:bg-slate-100 disabled:text-slate-400 transition-all"
                   />
                 </div>
@@ -171,7 +182,7 @@ export default function AddEditPlayerModal({
 
               {/* Nick Name */}
               <div>
-                <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
+                <label htmlFor="nick-name" className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
                   Nick Name *
                 </label>
                 <div className="relative rounded-lg shadow-xs">
@@ -179,18 +190,21 @@ export default function AddEditPlayerModal({
                     <Tag className="h-4 w-4 text-slate-400" />
                   </div>
                   <input
+                    id="nick-name"
                     type="text"
                     value={nickName}
                     onChange={(e) => setNickName(e.target.value)}
                     placeholder="e.g. Hein40"
-                    className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-800 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all"
+                    disabled={isSubmitting}
+                    aria-invalid={Boolean(error && !nickName.trim())}
+                    className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-800 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all disabled:bg-slate-100 disabled:text-slate-400"
                   />
                 </div>
               </div>
 
               {/* Agency */}
               <div>
-                <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
+                <label htmlFor="agency" className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
                   Agency *
                 </label>
                 <div className="relative rounded-lg shadow-xs">
@@ -198,9 +212,12 @@ export default function AddEditPlayerModal({
                     <AlignLeft className="h-4 w-4 text-slate-400" />
                   </div>
                   <select
+                    id="agency"
                     value={agency}
                     onChange={(e) => setAgency(e.target.value)}
-                    className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-800 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all"
+                    disabled={isSubmitting}
+                    aria-invalid={Boolean(error && !agency.trim())}
+                    className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-800 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all disabled:bg-slate-100 disabled:text-slate-400"
                   >
                     <option value="" disabled>
                       {availableAgencies.length === 0 ? 'No agencies available' : 'Select an agency'}
@@ -219,7 +236,7 @@ export default function AddEditPlayerModal({
 
               {/* Phone Number */}
               <div>
-                <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
+                <label htmlFor="phone-number" className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
                   Phone Number
                 </label>
                 <div className="relative rounded-lg shadow-xs">
@@ -227,26 +244,30 @@ export default function AddEditPlayerModal({
                     <Phone className="h-4 w-4 text-slate-400" />
                   </div>
                   <input
+                    id="phone-number"
                     type="text"
                     value={phoneNumber}
                     onChange={(e) => setPhoneNumber(e.target.value)}
                     placeholder="e.g. 09-xxxxxxxxx"
-                    className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-800 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all"
+                    disabled={isSubmitting}
+                    className="block w-full pl-10 pr-3 py-2.5 bg-slate-50 text-slate-800 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all disabled:bg-slate-100 disabled:text-slate-400"
                   />
                 </div>
               </div>
 
               {/* Remark */}
               <div>
-                <label className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
+                <label htmlFor="remark" className="block text-xs font-medium text-slate-500 uppercase tracking-wider mb-1.5">
                   Remark
                 </label>
                 <textarea
+                  id="remark"
                   value={remark}
                   onChange={(e) => setRemark(e.target.value)}
                   placeholder="Add player notes here..."
                   rows={3}
-                  className="block w-full p-3 bg-slate-50 text-slate-800 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all resize-none"
+                  disabled={isSubmitting}
+                  className="block w-full p-3 bg-slate-50 text-slate-800 placeholder-slate-400 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white transition-all resize-none disabled:bg-slate-100 disabled:text-slate-400"
                 />
               </div>
 
@@ -255,15 +276,17 @@ export default function AddEditPlayerModal({
                 <button
                   type="button"
                   onClick={onClose}
-                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 rounded-lg transition-colors border border-slate-200"
+                  disabled={isSubmitting}
+                  className="px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50 rounded-lg transition-colors border border-slate-200 disabled:cursor-not-allowed disabled:opacity-70"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors cursor-pointer"
+                  disabled={isSubmitting}
+                  className="px-5 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors cursor-pointer disabled:cursor-not-allowed disabled:opacity-70"
                 >
-                  Save Player
+                  {isSubmitting ? 'Saving...' : 'Save Player'}
                 </button>
               </div>
             </form>
