@@ -1,4 +1,5 @@
 import { Player, Transaction, TransactionType, AgencySummary, AccountType, AccountInfo, Account } from './types';
+import { TRACE_TX_ID, traceEvent } from './trace';
 
 export const INITIAL_PLAYERS: Player[] = [
   {
@@ -193,6 +194,21 @@ const DEFAULT_CATEGORY_BY_TYPE: Record<TransactionType, string> = {
 };
 
 export function normalizeTransaction(tx: Partial<Transaction> & { id: string }): Transaction {
+  if (TRACE_TX_ID && tx && tx.id === TRACE_TX_ID) {
+    try {
+      traceEvent(
+        {
+          txId: tx.id,
+          functionName: 'normalizeTransaction',
+          caller: 'normalizeTransaction',
+          reason: 'normalize input',
+          source: 'local storage',
+        },
+        tx as any,
+        null
+      );
+    } catch (e) {}
+  }
   const explicitType = tx.transactionType;
   const transactionType = explicitType === 'owner' || explicitType === 'bill' || explicitType === 'transfer'
     ? explicitType
@@ -206,7 +222,7 @@ export function normalizeTransaction(tx: Partial<Transaction> & { id: string }):
     : tx.ownerCategory === 'transfer' ? 'transfer'
     : tx.ownerCategory;
 
-  return {
+  const result: Transaction = {
     id: tx.id || `tx_${Date.now()}`,
     transactionType,
     playerId: tx.playerId || '',
@@ -225,6 +241,24 @@ export function normalizeTransaction(tx: Partial<Transaction> & { id: string }):
     date: tx.date || '',
     remark: tx.remark || '',
   };
+
+  if (TRACE_TX_ID && tx && tx.id === TRACE_TX_ID) {
+    try {
+      traceEvent(
+        {
+          txId: result.id,
+          functionName: 'normalizeTransaction',
+          caller: 'normalizeTransaction',
+          reason: 'normalized output',
+          source: 'local storage',
+        },
+        tx as any,
+        result as any
+      );
+    } catch (e) {}
+  }
+
+  return result;
 }
 
 export function getTransactionDisplayCategory(tx: Transaction) {

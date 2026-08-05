@@ -66,6 +66,7 @@ import {
 import { FirebaseAuthentication } from '@capacitor-firebase/authentication';
 import { Capacitor } from '@capacitor/core';
 import { doc, collection, onSnapshot, setDoc, deleteDoc, writeBatch, getDocs, query, getDoc } from 'firebase/firestore';
+import { TRACE_TX_ID as TRACE_URL_TX_ID, traceEvent } from './trace';
 
 const DEFAULT_ACCOUNTS: Account[] = [
   { id: 'Cash', name: 'Cash', icon: 'Wallet', color: 'bg-emerald-500', baseBalance: 500000 },
@@ -129,8 +130,27 @@ export default function App() {
   const [pendingQueue, setPendingQueue] = useState<OfflineOperation[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
   const pendingQueueRef = useRef<OfflineOperation[]>([]);
+  const transactionsRef = useRef<Transaction[]>([]);
   const lastLocalTransactionsUpdate = useRef<number>(0);
   const ignoreRemoteTransactionSnapshotsUntil = useRef<number>(0);
+  const TRACE_TX_ID = TRACE_URL_TX_ID;
+
+  type TransactionTraceSource = 'UI' | 'owner sync' | 'replay' | 'snapshot' | 'queue' | 'local storage';
+  type TransactionTraceInfo = {
+    txId: string;
+    functionName: string;
+    caller: string;
+    reason: string;
+    source: TransactionTraceSource;
+  };
+
+  const traceTransactionMutation = (
+    traceInfo: TransactionTraceInfo,
+    previousTx: Transaction | null,
+    nextTx: Transaction | null
+  ) => {
+    traceEvent(traceInfo, previousTx, nextTx);
+  };
 
   const updatePendingQueue = (nextQueue: OfflineOperation[]) => {
     pendingQueueRef.current = nextQueue;
@@ -156,10 +176,18 @@ export default function App() {
     setAccounts(next);
   };
 
-  const saveLocalTransactions = (uid: string, next: Transaction[]) => {
+  const saveLocalTransactions = (uid: string, next: Transaction[], traceInfo?: TransactionTraceInfo) => {
+    const previous = transactionsRef.current;
+    if (traceInfo) {
+      const previousTx = previous.find((tx) => tx.id === traceInfo.txId) ?? null;
+      const nextTx = next.find((tx) => tx.id === traceInfo.txId) ?? null;
+      traceTransactionMutation(traceInfo, previousTx, nextTx);
+    }
+
     lastLocalTransactionsUpdate.current = Date.now();
     ignoreRemoteTransactionSnapshotsUntil.current = Date.now() + 3000;
     saveLocalArray<Transaction>(uid, 'transactions', next);
+    transactionsRef.current = next;
     setTransactions(next);
   };
 
@@ -185,9 +213,35 @@ export default function App() {
     }));
   };
 
+  const sortOwnerPrivateTransactions = (transactions: PrivateTransaction[]) => {
+    return [...(transactions || [])].sort((a, b) => {
+      const aTime = new Date(a.date).getTime();
+      const bTime = new Date(b.date).getTime();
+      if (aTime !== bTime) return bTime - aTime;
+      return b.id.localeCompare(a.id) * -1;
+    });
+  };
+
   const enqueueOrSync = async (operation: OfflineOperation) => {
     if (!user) {
       throw new Error('User must be signed in to sync');
+    }
+
+    if (TRACE_TX_ID && operation.collection === 'transactions' && operation.docId === TRACE_TX_ID) {
+      try {
+        const prev = transactionsRef.current.find((t) => t.id === TRACE_TX_ID) ?? null;
+        traceTransactionMutation(
+          {
+            txId: TRACE_TX_ID,
+            functionName: 'enqueueOrSync',
+            caller: 'enqueueOrSync',
+            reason: operation.type === 'set' ? 'enqueueOrSync set' : 'enqueueOrSync delete',
+            source: 'queue',
+          },
+          prev,
+          operation.type === 'set' ? (operation.data as any) : null
+        );
+      } catch (e) {}
     }
 
     if (!navigator.onLine) {
@@ -235,6 +289,22 @@ export default function App() {
     }
 
     const { collection: col, type, docId, data } = operation;
+    if (TRACE_TX_ID && col === 'transactions' && docId === TRACE_TX_ID) {
+      try {
+        const prev = transactionsRef.current.find((t) => t.id === TRACE_TX_ID) ?? null;
+        traceTransactionMutation(
+          {
+            txId: TRACE_TX_ID,
+            functionName: 'syncOperation',
+            caller: 'syncOperation',
+            reason: type === 'set' ? 'firestore set' : 'firestore delete',
+            source: 'queue',
+          },
+          prev,
+          type === 'set' ? (data as any) : null
+        );
+      } catch (e) {}
+    }
     if (col === 'private') {
       const ref = doc(db, 'users', user.uid, PRIVATE_DOC_ID, PRIVATE_SUBDOC);
       if (type === 'set') {
@@ -273,6 +343,22 @@ export default function App() {
         break;
       }
       try {
+        if (TRACE_TX_ID && operation.collection === 'transactions' && operation.docId === TRACE_TX_ID) {
+          try {
+            const prev = transactionsRef.current.find((t) => t.id === TRACE_TX_ID) ?? null;
+            traceTransactionMutation(
+              {
+                txId: TRACE_TX_ID,
+                functionName: 'processPendingQueue',
+                caller: 'processPendingQueue',
+                reason: 'processing queued operation',
+                source: 'queue',
+              },
+              prev,
+              operation.type === 'set' ? (operation.data as any) : null
+            );
+          } catch (e) {}
+        }
         await syncOperation(operation);
         queue = removePendingOperation(user.uid, operation.id);
       } catch (err) {
@@ -292,7 +378,24 @@ export default function App() {
     const localState = loadOfflineState(uid);
     if (localState.players.length > 0) setPlayers(localState.players);
     if (localState.accounts.length > 0) setAccounts(localState.accounts);
-    if (localState.transactions.length > 0) setTransactions(localState.transactions);
+    if (localState.transactions.length > 0) {
+      if (TRACE_TX_ID) {
+        const nextTx = localState.transactions.find((tx) => tx.id === TRACE_TX_ID) ?? null;
+        traceTransactionMutation(
+          {
+            txId: TRACE_TX_ID,
+            functionName: 'loadOfflineUserState',
+            caller: 'loadOfflineUserState',
+            reason: 'restore local transaction state',
+            source: 'local storage',
+          },
+          null,
+          nextTx
+        );
+      }
+      transactionsRef.current = localState.transactions;
+      setTransactions(localState.transactions);
+    }
     if (localState.paymentAccounts.length > 0) setPaymentAccounts(localState.paymentAccounts);
     if (localState.pendingQueue.length > 0) updatePendingQueue(localState.pendingQueue);
     setSyncStatus(navigator.onLine ? (localState.pendingQueue.length > 0 ? 'pending' : 'synced') : 'offline');
@@ -631,10 +734,9 @@ export default function App() {
     }
 
     if (changed) {
-      // Ensure updated owner data is persisted and state is updated immediately
+      nextOwnerData.transactions = sortOwnerPrivateTransactions(nextOwnerData.transactions);
       await saveEncryptedOwnerPrivateData(nextOwnerData, passcode, true);
       setOwnerPrivateData(nextOwnerData);
-      // Clear persisted pending ops both locally and from recovery meta
       try {
         savePendingOwnerPrivateOperations([]);
         await persistPendingOwnerPrivateOperations([]);
@@ -642,7 +744,6 @@ export default function App() {
         console.warn('Failed to clear persisted pending owner ops after apply', err);
       }
     }
-    
   };
 
   useEffect(() => {
@@ -851,6 +952,22 @@ export default function App() {
             return;
           }
 
+          if (TRACE_TX_ID) {
+            const nextTx = list.find((tx) => tx.id === TRACE_TX_ID) ?? null;
+            traceTransactionMutation(
+              {
+                txId: TRACE_TX_ID,
+                functionName: 'onSnapshot(txsRef)',
+                caller: 'Firestore snapshot listener',
+                reason: 'remote transaction snapshot update',
+                source: 'snapshot',
+              },
+              null,
+              nextTx
+            );
+          }
+
+          transactionsRef.current = list;
           setTransactions(list);
           saveLocalArray<Transaction>(currentUser.uid, 'transactions', list);
         });
@@ -887,6 +1004,7 @@ export default function App() {
       } else {
         // Clear all state on sign out
         setPlayers([]);
+        transactionsRef.current = [];
         setTransactions([]);
         setAccounts([]);
         setPaymentAccounts([]);
@@ -1100,7 +1218,7 @@ useEffect(() => {
 
     const updatedAccounts = accounts.filter((a) => a.id !== idToRemove);
     const fallbackId = updatedAccounts[0]?.id || '';
-    const nextTransactions = transactions.map((t) =>
+    const nextTransactions = transactionsRef.current.map((t) =>
       t.account === idToRemove ? { ...t, account: fallbackId } : t
     );
 
@@ -1171,7 +1289,7 @@ useEffect(() => {
   const handleDeletePlayer = async (playerId: string) => {
     if (!user) return;
     const nextPlayers = players.filter((p) => p.id !== playerId);
-    const nextTransactions = transactions.filter((t) => t.playerId !== playerId);
+    const nextTransactions = transactionsRef.current.filter((t) => t.playerId !== playerId);
 
     saveLocalPlayers(user.uid, nextPlayers);
     saveLocalTransactions(user.uid, nextTransactions);
@@ -1185,7 +1303,7 @@ useEffect(() => {
     };
     await enqueueOrSync(deletePlayerOp);
 
-    for (const tx of transactions.filter((t) => t.playerId === playerId)) {
+    for (const tx of transactionsRef.current.filter((t) => t.playerId === playerId)) {
       const op: OfflineOperation = {
         id: `op_${Date.now()}_del_tx_${tx.id}`,
         collection: 'transactions',
@@ -1230,7 +1348,7 @@ useEffect(() => {
   const handleSaveTransaction = useCallback(async (txData: Omit<Transaction, 'id'>, editId?: string, options?: { skipOwnerSync?: boolean }) => {
     if (!user) throw new Error('User is not authenticated');
 
-    const previousTransactions = transactions;
+    const previousTransactions = transactionsRef.current;
     const previousPaymentAccounts = paymentAccounts;
 
     let paymentAccountId = txData.paymentAccountId;
@@ -1274,6 +1392,23 @@ useEffect(() => {
     }
 
     const id = editId || 'tx_' + Date.now().toString();
+    // Trace UI values before normalization for the specific tx id (if provided via URL)
+    if (TRACE_TX_ID && (editId === TRACE_TX_ID || (!editId && (`tx_${Date.now().toString()}`) === TRACE_TX_ID))) {
+      try {
+        traceTransactionMutation(
+          {
+            txId: TRACE_TX_ID,
+            functionName: 'handleSaveTransaction.preNormalize',
+            caller: 'UI',
+            reason: 'UI form before normalize',
+            source: 'UI',
+          },
+          null,
+          txData as any
+        );
+      } catch (e) {}
+    }
+
     const normalizedTransaction = normalizeTransaction({
       ...txData,
       id,
@@ -1288,10 +1423,35 @@ useEffect(() => {
     });
 
     const nextTransactions = editId
-      ? transactions.map((t) => (t.id === id ? normalizedTransaction : t))
-      : [...transactions, normalizedTransaction];
+      ? transactionsRef.current.map((t) => (t.id === id ? normalizedTransaction : t))
+      : [...transactionsRef.current, normalizedTransaction];
 
-    saveLocalTransactions(user.uid, nextTransactions);
+    // If this is the traced transaction, emit detailed trace data
+    if (TRACE_TX_ID && normalizedTransaction.id === TRACE_TX_ID) {
+      try {
+        const prevTx = transactionsRef.current.find((t) => t.id === TRACE_TX_ID) ?? null;
+        traceTransactionMutation(
+          {
+            txId: TRACE_TX_ID,
+            functionName: 'handleSaveTransaction.beforeSaveLocal',
+            caller: 'UI',
+            reason: editId ? 'update' : 'create',
+            source: 'UI',
+          },
+          prevTx,
+          normalizedTransaction
+        );
+      } catch (e) {}
+      saveLocalTransactions(user.uid, nextTransactions, {
+        txId: TRACE_TX_ID,
+        functionName: 'handleSaveTransaction',
+        caller: 'UI',
+        reason: editId ? 'update' : 'create',
+        source: 'UI',
+      });
+    } else {
+      saveLocalTransactions(user.uid, nextTransactions);
+    }
 
     const transactionOp: OfflineOperation = {
       id: `op_tx_${id}_${Date.now()}`,
@@ -1373,12 +1533,6 @@ useEffect(() => {
                   : [privateTx, ...(ownerDataInMemory.transactions || [])],
             };
 
-            console.debug('Owner sync: apply business update to owner private transaction', {
-              transactionId: normalizedTransaction.id,
-              ownerTxId: privateTx.id,
-              existingOwnerTxIndex,
-            });
-
             setOwnerPrivateData(nextOwnerData);
             await saveOwnerPrivateData(nextOwnerData, ownerPasscode);
           } catch (err) {
@@ -1408,9 +1562,9 @@ useEffect(() => {
   const handleDeleteTransaction = async (txId: string, options?: { skipOwnerSync?: boolean }) => {
     if (!user) return;
 
-    const deletedTx = transactions.find((tx) => tx.id === txId);
-    const previousTransactions = transactions;
-    const nextTransactions = transactions.filter((tx) => tx.id !== txId);
+    const deletedTx = transactionsRef.current.find((tx) => tx.id === txId);
+    const previousTransactions = transactionsRef.current;
+    const nextTransactions = transactionsRef.current.filter((tx) => tx.id !== txId);
 
     saveLocalTransactions(user.uid, nextTransactions);
 
@@ -1678,16 +1832,40 @@ useEffect(() => {
   ): Promise<{ accounts: any[]; transactions: any[] }> => {
     if (!user) return nextData;
 
-    const prevSourceIds = new Set(previousData.transactions.map((tx) => tx.sourceTransactionId).filter(Boolean) as string[]);
     const nextSourceIds = new Set(nextData.transactions.map((tx) => tx.sourceTransactionId).filter(Boolean) as string[]);
+    let currentTransactions = [...transactionsRef.current];
     const updatedOwnerTransactions = nextData.transactions.map((tx) => ({ ...tx }));
 
     // Deletes: owner private tx removed
     for (const prevTx of previousData.transactions) {
       if (!prevTx.sourceTransactionId) continue;
       if (!nextSourceIds.has(prevTx.sourceTransactionId)) {
-        console.debug('Owner sync: deleting linked business transaction', { sourceTransactionId: prevTx.sourceTransactionId });
-        await handleDeleteTransaction(prevTx.sourceTransactionId, { skipOwnerSync: true });
+        const txId = prevTx.sourceTransactionId;
+        const deleteOp: OfflineOperation = {
+          id: `op_tx_del_${txId}_${Date.now()}`,
+          collection: 'transactions',
+          type: 'delete',
+          docId: txId,
+          createdAt: new Date().toISOString(),
+        };
+        if (TRACE_TX_ID && txId === TRACE_TX_ID) {
+          try {
+            const prev = currentTransactions.find((t) => t.id === TRACE_TX_ID) ?? null;
+            traceTransactionMutation(
+              {
+                txId: TRACE_TX_ID,
+                functionName: 'syncOwnerPrivateChangesToBusiness.delete',
+                caller: 'syncOwnerPrivateChangesToBusiness',
+                reason: 'owner private delete -> business',
+                source: 'owner sync',
+              },
+              prev,
+              null
+            );
+          } catch (e) {}
+        }
+        await enqueueOrSync(deleteOp);
+        currentTransactions = currentTransactions.filter((tx) => tx.id !== txId);
       }
     }
 
@@ -1706,7 +1884,7 @@ useEffect(() => {
 
       if (!hasChanges) continue;
 
-      const businessTx = transactions.find((tx) => tx.id === nextTx.sourceTransactionId);
+      const businessTx = currentTransactions.find((tx) => tx.id === nextTx.sourceTransactionId);
       if (!businessTx) {
         console.warn('Owner sync update skipped because linked business transaction was not found', nextTx.sourceTransactionId);
         continue;
@@ -1731,16 +1909,21 @@ useEffect(() => {
         paymentAccountType: businessTx.paymentAccountType,
       };
 
-      console.debug('Owner sync: updating linked business transaction', {
-        sourceTransactionId: nextTx.sourceTransactionId,
-        updatedBusinessTx,
-      });
-
-      const nextTransactions = transactions.map((tx) =>
-        tx.id === businessTx.id ? updatedBusinessTx : tx
-      );
-
-      saveLocalTransactions(user.uid, nextTransactions);
+      if (TRACE_TX_ID && businessTx.id === TRACE_TX_ID) {
+        try {
+          traceTransactionMutation(
+            {
+              txId: TRACE_TX_ID,
+              functionName: 'syncOwnerPrivateChangesToBusiness.update',
+              caller: 'syncOwnerPrivateChangesToBusiness',
+              reason: 'owner private update -> business',
+              source: 'owner sync',
+            },
+            businessTx,
+            updatedBusinessTx
+          );
+        } catch (e) {}
+      }
 
       const updateOp: OfflineOperation = {
         id: `op_tx_${businessTx.id}_${Date.now()}`,
@@ -1751,6 +1934,9 @@ useEffect(() => {
         createdAt: new Date().toISOString(),
       };
 
+      currentTransactions = currentTransactions.map((tx) =>
+        tx.id === businessTx.id ? updatedBusinessTx : tx
+      );
       await enqueueOrSync(updateOp);
     }
 
@@ -1785,14 +1971,6 @@ useEffect(() => {
         remark: ownerTx.remark || (ownerTransferDirection === 'business_to_owner' ? 'Received from Business' : 'Sent to Business'),
       });
 
-      console.debug('Owner sync: creating linked business transaction', {
-        ownerTxId: ownerTx.id,
-        businessTxId: businessTx.id,
-      });
-
-      const nextTransactions = [...transactions, businessTx];
-      saveLocalTransactions(user.uid, nextTransactions);
-
       const createOp: OfflineOperation = {
         id: `op_tx_${businessTx.id}_${Date.now()}`,
         collection: 'transactions',
@@ -1802,13 +1980,31 @@ useEffect(() => {
         createdAt: new Date().toISOString(),
       };
 
+      currentTransactions = [...currentTransactions, businessTx];
       await enqueueOrSync(createOp);
+      if (TRACE_TX_ID && businessTx.id === TRACE_TX_ID) {
+        try {
+          traceTransactionMutation(
+            {
+              txId: TRACE_TX_ID,
+              functionName: 'syncOwnerPrivateChangesToBusiness.create',
+              caller: 'syncOwnerPrivateChangesToBusiness',
+              reason: 'owner private create -> business',
+              source: 'owner sync',
+            },
+            null,
+            businessTx
+          );
+        } catch (e) {}
+      }
       updatedOwnerTransactions[i] = { ...ownerTx, sourceTransactionId: businessTx.id };
     }
 
+    saveLocalTransactions(user.uid, currentTransactions);
+
     return {
       ...nextData,
-      transactions: updatedOwnerTransactions,
+      transactions: sortOwnerPrivateTransactions(updatedOwnerTransactions),
     };
   };
 
@@ -1818,12 +2014,6 @@ useEffect(() => {
       await saveOwnerPrivateData(data, ownerPasscode);
       return;
     }
-
-    console.debug('Owner save: syncing private data to business with previous and next data', {
-      hasPrevious: Boolean(ownerPrivateData),
-      previousTxCount: ownerPrivateData.transactions.length,
-      nextTxCount: data.transactions.length,
-    });
 
     const syncedData = await syncOwnerPrivateChangesToBusiness(ownerPrivateData, data);
     if (!ownerPasscode) return;
