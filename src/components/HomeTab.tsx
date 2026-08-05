@@ -30,6 +30,7 @@ export default function HomeTab({
 }: HomeTabProps) {
   const [hideBalances, setHideBalances] = useState(false);
   const [selectedAccountId, setSelectedAccountId] = useState<string | null>(null);
+  const [selectedPaymentAccountId, setSelectedPaymentAccountId] = useState<string | null>(null);
   const [selectedTransactionId, setSelectedTransactionId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [historyFilter, setHistoryFilter] = useState<'all' | 'player' | 'owner' | 'bill' | 'transfer'>('all');
@@ -65,6 +66,7 @@ export default function HomeTab({
   const agencySummaries = getAgencySummaries(players, transactions);
   const normalizedTransactions = useMemo(() => transactions.map((tx) => normalizeTransaction(tx)), [transactions]);
   const selectedAccount = selectedAccountId ? accounts.find((acc) => acc.id === selectedAccountId) || null : null;
+  const selectedPaymentAccount = selectedPaymentAccountId ? paymentAccounts.find((acc) => acc.id === selectedPaymentAccountId) || null : null;
 
   const selectedAccountTransactions = useMemo(() => {
     if (!selectedAccount) return [];
@@ -77,6 +79,13 @@ export default function HomeTab({
       })
       .sort((a, b) => b.date.localeCompare(a.date));
   }, [normalizedTransactions, selectedAccount]);
+
+  const selectedPaymentAccountTransactions = useMemo(() => {
+    if (!selectedPaymentAccount) return [];
+    return normalizedTransactions
+      .filter((tx) => tx.paymentAccountId === selectedPaymentAccount.id)
+      .sort((a, b) => b.date.localeCompare(a.date));
+  }, [normalizedTransactions, selectedPaymentAccount]);
 
   const filteredAccountTransactions = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -106,6 +115,34 @@ export default function HomeTab({
     });
   }, [historyFilter, paymentAccounts, players, searchQuery, selectedAccountTransactions]);
 
+  const filteredPaymentAccountTransactions = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase();
+
+    return selectedPaymentAccountTransactions.filter((tx) => {
+      if (historyFilter !== 'all' && tx.transactionType !== historyFilter) {
+        return false;
+      }
+
+      if (!query) return true;
+
+      const player = players.find((p) => p.id === tx.playerId);
+      const paymentLabel = paymentAccounts.find((pa) => pa.id === tx.paymentAccountId)?.accountName?.trim() || tx.paymentAccountType?.trim() || tx.paymentAccountNumber?.trim() || '';
+      const searchText = [
+        player?.playerId || '',
+        player?.nickName || '',
+        player?.agency || '',
+        tx.category || '',
+        tx.remark || '',
+        paymentLabel,
+        tx.paymentAccountNumber || '',
+        tx.billName || '',
+        tx.account || '',
+        tx.toAccount || '',
+      ].join(' ').toLowerCase();
+      return searchText.includes(query);
+    });
+  }, [historyFilter, paymentAccounts, players, searchQuery, selectedPaymentAccountTransactions]);
+
   const groupedAccountTransactions = useMemo(() => {
     const groups = new Map<string, Transaction[]>();
 
@@ -116,11 +153,11 @@ export default function HomeTab({
       const yesterday = new Date(today);
       yesterday.setDate(today.getDate() - 1);
       const yesterdayKey = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
-      let label = formatTransactionDateTime(tx.date).date;
+      let label = formatTransactionDateTime(tx.date).date.toUpperCase();
       if (datePart === todayKey) {
-        label = 'Today';
+        label = 'TODAY';
       } else if (datePart === yesterdayKey) {
-        label = 'Yesterday';
+        label = 'YESTERDAY';
       }
 
       if (!groups.has(label)) {
@@ -132,7 +169,36 @@ export default function HomeTab({
     return Array.from(groups.entries()).map(([label, transactions]) => ({ label, transactions }));
   }, [filteredAccountTransactions]);
 
-  const selectedDetailTx = selectedTransactionId ? selectedAccountTransactions.find((tx) => tx.id === selectedTransactionId) || null : null;
+  const groupedPaymentAccountTransactions = useMemo(() => {
+    const groups = new Map<string, Transaction[]>();
+
+    filteredPaymentAccountTransactions.forEach((tx) => {
+      const datePart = tx.date.substring(0, 10);
+      const today = new Date();
+      const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      const yesterday = new Date(today);
+      yesterday.setDate(today.getDate() - 1);
+      const yesterdayKey = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+      let label = formatTransactionDateTime(tx.date).date.toUpperCase();
+      if (datePart === todayKey) {
+        label = 'TODAY';
+      } else if (datePart === yesterdayKey) {
+        label = 'YESTERDAY';
+      }
+
+      if (!groups.has(label)) {
+        groups.set(label, []);
+      }
+      groups.get(label)?.push(tx);
+    });
+
+    return Array.from(groups.entries()).map(([label, transactions]) => ({ label, transactions }));
+  }, [filteredPaymentAccountTransactions]);
+
+  const activeHistoryTransactions = selectedPaymentAccount ? selectedPaymentAccountTransactions : selectedAccountTransactions;
+  const filteredHistoryTransactions = selectedPaymentAccount ? filteredPaymentAccountTransactions : filteredAccountTransactions;
+  const groupedHistoryTransactions = selectedPaymentAccount ? groupedPaymentAccountTransactions : groupedAccountTransactions;
+  const selectedDetailTx = selectedTransactionId ? activeHistoryTransactions.find((tx) => tx.id === selectedTransactionId) || null : null;
 
   const handleDelete = (id: string) => {
     if (window.confirm('Are you sure you want to delete this transaction?')) {
@@ -143,12 +209,23 @@ export default function HomeTab({
 
   const openAccountDetail = (accountId: string) => {
     setSelectedAccountId(accountId);
+    setSelectedPaymentAccountId(null);
     setSelectedTransactionId(null);
     setSearchQuery('');
   };
 
-  const openAddForSelectedAccount = () => {
-    if (selectedAccount) {
+  const openPaymentAccountDetail = (paymentAccountId: string) => {
+    setSelectedPaymentAccountId(paymentAccountId);
+    setSelectedAccountId(null);
+    setSelectedTransactionId(null);
+    setSearchQuery('');
+    setHistoryFilter('all');
+  };
+
+  const openAddForSelectedContext = () => {
+    if (selectedPaymentAccount) {
+      onAddTransaction(undefined, selectedPaymentAccount.accountName?.trim() || selectedPaymentAccount.type?.trim() || 'Payment account');
+    } else if (selectedAccount) {
       onAddTransaction(selectedAccount.id, selectedAccount.name);
     }
   };
@@ -160,13 +237,43 @@ export default function HomeTab({
       return 'Player';
     }
     if (tx.transactionType === 'transfer') return 'Transfer';
-    if (tx.transactionType === 'owner') return 'Owner';
+    if (tx.transactionType === 'owner') {
+      return tx.ownerTransferDirection === 'business_to_owner' ? 'Business → Owner' : 'Owner → Business';
+    }
     return 'Bill';
+  };
+
+  const getTransactionBadgeClass = (tx: Transaction) => {
+    if (tx.transactionType === 'player') {
+      if (tx.category === 'Integral Bought') return 'bg-emerald-50 text-emerald-700';
+      if (tx.category === 'Integral Returned') return 'bg-rose-50 text-rose-700';
+      return 'bg-slate-100 text-slate-700';
+    }
+    if (tx.transactionType === 'transfer') return 'bg-slate-100 text-slate-700';
+    if (tx.transactionType === 'owner') return 'bg-blue-50 text-blue-700';
+    return 'bg-amber-50 text-amber-700';
   };
 
   const getPaymentAccountLabel = (tx: Transaction) => {
     const paymentAccount = paymentAccounts.find((item) => item.id === tx.paymentAccountId);
     return paymentAccount?.accountName?.trim() || paymentAccount?.type?.trim() || tx.paymentAccountType?.trim() || 'Payment';
+  };
+
+  const getPaymentBadgeClass = (paymentLabel: string) => {
+    const normalized = paymentLabel.toLowerCase();
+    if (normalized.includes('wave')) return 'bg-sky-500 text-white';
+    if (normalized.includes('kpay') || normalized.includes('kbz')) return 'bg-indigo-600 text-white';
+    if (normalized.includes('cb') || normalized.includes('cbpay')) return 'bg-violet-600 text-white';
+    if (normalized.includes('aya')) return 'bg-blue-600 text-white';
+    if (normalized.includes('cash')) return 'bg-emerald-500 text-white';
+    return 'bg-slate-900 text-white';
+  };
+
+  const getAmountColorClass = (tx: Transaction) => {
+    if (tx.transactionType === 'player' && tx.category === 'Integral Bought') return 'text-emerald-600';
+    if (tx.transactionType === 'player' && tx.category === 'Integral Returned') return 'text-rose-600';
+    if (tx.transactionType === 'transfer') return 'text-blue-600';
+    return 'text-slate-900';
   };
 
   return (
@@ -255,6 +362,8 @@ export default function HomeTab({
           })}
         </div>
       </div>
+
+      {/* Payment Accounts removed from Home per UI spec (they belong to players, not business) */}
 
       {/* Cash Flow Section */}
       <div className="bg-white rounded-2xl p-5 border border-slate-100 shadow-2xs">
@@ -361,32 +470,32 @@ export default function HomeTab({
       </div>
 
       <AnimatePresence>
-        {selectedAccount && (
+        {(selectedAccount || selectedPaymentAccount) && (
           <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="fixed inset-0 z-40 bg-slate-950/45 backdrop-blur-sm">
             <motion.div initial={{ y: '100%' }} animate={{ y: 0 }} exit={{ y: '100%' }} transition={{ type: 'spring', damping: 24, stiffness: 220 }} className="absolute inset-x-0 bottom-0 rounded-t-[32px] bg-white p-4 shadow-2xl">
               <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-slate-200" />
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-[10px] uppercase tracking-[0.3em] text-slate-500">Account history</p>
-                  <h3 className="text-lg font-semibold text-slate-900">{selectedAccount.name}</h3>
+                  <p className="text-[10px] uppercase tracking-[0.3em] text-slate-500">{selectedPaymentAccount ? 'Payment account history' : 'Account history'}</p>
+                  <h3 className="text-lg font-semibold text-slate-900">{selectedPaymentAccount ? (selectedPaymentAccount.accountName?.trim() || selectedPaymentAccount.type?.trim() || 'Payment account') : selectedAccount?.name}</h3>
                 </div>
-                <button type="button" onClick={() => setSelectedAccountId(null)} className="rounded-full border border-slate-200 p-2 text-slate-500">
+                <button type="button" onClick={() => { setSelectedAccountId(null); setSelectedPaymentAccountId(null); }} className="rounded-full border border-slate-200 p-2 text-slate-500">
                   <X className="h-4 w-4" />
                 </button>
               </div>
 
               <div className="mt-4 rounded-[22px] border border-slate-200 bg-slate-50 p-4">
-                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-400">Account Name</p>
-                <p className="mt-1 text-base font-semibold text-slate-900">{selectedAccount.name}</p>
+                <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-400">{selectedPaymentAccount ? 'Payment Account' : 'Account Name'}</p>
+                <p className="mt-1 text-base font-semibold text-slate-900">{selectedPaymentAccount ? (selectedPaymentAccount.accountName?.trim() || selectedPaymentAccount.type?.trim() || 'Payment account') : selectedAccount?.name}</p>
                 <div className="mt-3 border-t border-slate-200 pt-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-400">Current Balance</p>
-                  <p className="mt-1 text-lg font-semibold text-slate-900">{hideBalances ? '****** MMK' : formatMMK(accountBalances[selectedAccount.id] || 0)}</p>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.24em] text-slate-400">{selectedPaymentAccount ? 'Phone Number' : 'Current Balance'}</p>
+                  <p className="mt-1 text-lg font-semibold text-slate-900">{selectedPaymentAccount ? (selectedPaymentAccount.accountNumber?.trim() || '—') : (hideBalances ? '****** MMK' : formatMMK(accountBalances[selectedAccount?.id || ''] || 0))}</p>
                 </div>
               </div>
 
               <div className="mt-4 flex items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50 px-3 py-2.5">
                 <Search className="h-4 w-4 text-slate-400" />
-                <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search this account history" className="w-full border-0 bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-400" />
+                <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder={selectedPaymentAccount ? 'Search this payment account history' : 'Search this account history'} className="w-full border-0 bg-transparent text-sm text-slate-700 outline-none placeholder:text-slate-400" />
               </div>
 
               <div className="mt-3 flex flex-wrap gap-2">
@@ -398,18 +507,16 @@ export default function HomeTab({
               </div>
 
               <div className="mt-4 space-y-3 overflow-y-auto pb-24">
-                {filteredAccountTransactions.length === 0 ? (
+                {filteredHistoryTransactions.length === 0 ? (
                   <div className="rounded-[20px] border border-dashed border-slate-200 bg-slate-50 p-6 text-center text-sm text-slate-500">
-                    No transactions found for this account.
+                    {selectedPaymentAccount ? 'No transactions found for this payment account.' : 'No transactions found for this account.'}
                   </div>
                 ) : (
-                  groupedAccountTransactions.map((group) => (
+                  groupedHistoryTransactions.map((group) => (
                     <div key={group.label} className="space-y-2">
                       <p className="px-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-400">{group.label}</p>
                       {group.transactions.map((tx) => {
                         const player = players.find((p) => p.id === tx.playerId);
-                        const amountColor = tx.transactionType === 'player' && tx.category === 'Integral Bought' ? 'text-emerald-600' : tx.transactionType === 'player' && tx.category === 'Integral Returned' ? 'text-rose-600' : tx.transactionType === 'transfer' ? 'text-blue-600' : 'text-slate-800';
-                        const icon = tx.transactionType === 'transfer' ? <ArrowLeftRight className="h-4 w-4" /> : tx.transactionType === 'player' ? (tx.category === 'Integral Bought' ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownLeft className="h-4 w-4" />) : tx.transactionType === 'bill' ? <Receipt className="h-4 w-4" /> : <Building2 className="h-4 w-4" />;
                         const formattedDateTime = formatTransactionDateTime(tx.date);
                         const playerLabel = player?.nickName || player?.playerId || tx.playerName || 'Player';
                         const paymentLabel = getPaymentAccountLabel(tx);
@@ -424,23 +531,48 @@ export default function HomeTab({
                         })() : '';
 
                         return (
-                          <button key={tx.id} type="button" onClick={() => setSelectedTransactionId(tx.id)} className="flex w-full items-center justify-between rounded-[20px] border border-slate-200 bg-white px-3.5 py-3 text-left shadow-sm transition hover:border-slate-300 hover:shadow-md">
-                            <div className="flex min-w-0 flex-1 items-start gap-2.5">
-                              <div className={`mt-0.5 rounded-2xl p-2 ${tx.transactionType === 'player' && tx.category === 'Integral Bought' ? 'bg-emerald-50 text-emerald-600' : tx.transactionType === 'player' && tx.category === 'Integral Returned' ? 'bg-rose-50 text-rose-600' : tx.transactionType === 'transfer' ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-600'}`}>
-                                {icon}
-                              </div>
+                          <button
+                            key={tx.id}
+                            type="button"
+                            onClick={() => setSelectedTransactionId(tx.id)}
+                            className="w-full rounded-[16px] border border-slate-200 bg-white px-3 py-3 text-left shadow-sm transition hover:border-slate-300 hover:shadow-md"
+                          >
+                            <div className="flex items-start justify-between gap-3">
+                              {/* LEFT: compact stacked info */}
                               <div className="min-w-0 flex-1">
-                                <div className="inline-flex items-center rounded-full bg-slate-100 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-600">
-                                  {transactionLabel}
+                                <div className="flex flex-col gap-1">
+                                  {/* Row 1: Transaction type badge */}
+                                  <span className={`inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] ${getTransactionBadgeClass(tx)}`}>
+                                    {transactionLabel}
+                                  </span>
+
+                                  {/* Row 2: Business account badge */}
+                                  <span className={`inline-flex mt-1 rounded-full px-2.5 py-1 text-[10px] font-semibold ${getPaymentBadgeClass(paymentLabel)}`}>
+                                    {paymentLabel}
+                                  </span>
+
+                                  {/* Row 3: Player name + staff sign */}
+                                  <div className="mt-2 flex items-center gap-2">
+                                    <p className="truncate text-sm font-semibold text-slate-900">{playerLabel}</p>
+                                    {staffSign ? (
+                                      <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">{staffSign}</span>
+                                    ) : null}
+                                  </div>
+
+                                  {/* Row 4: Payment account number (optional) */}
+                                  {tx.paymentAccountNumber?.trim() ? (
+                                    <p className="mt-1 truncate text-[11px] text-slate-500">{tx.paymentAccountNumber.trim()}</p>
+                                  ) : null}
                                 </div>
-                                <p className="mt-2 truncate text-sm font-semibold text-slate-900">{paymentLabel}</p>
-                                <p className="mt-0.5 truncate text-[12px] text-slate-600">{playerLabel}</p>
-                                {staffSign ? <p className="mt-0.5 text-[11px] font-semibold text-slate-500">Sign • {staffSign}</p> : null}
                               </div>
-                            </div>
-                            <div className="ml-3 text-right">
-                              <p className={`text-sm font-semibold ${amountColor}`}>{tx.transactionType === 'player' && tx.category === 'Integral Bought' ? '+' : tx.transactionType === 'transfer' ? '' : '-'}{formatMMK(tx.amount)}</p>
-                              <p className="mt-1 text-[11px] text-slate-400">{formattedDateTime.time}</p>
+
+                              {/* RIGHT: Amount and time */}
+                              <div className="flex shrink-0 flex-col items-end justify-center">
+                                <p className={`text-lg font-black leading-none ${getAmountColorClass(tx)}`}>
+                                  {tx.transactionType === 'player' && tx.category === 'Integral Bought' ? '+' : tx.transactionType === 'transfer' ? '' : '-'}{formatMMK(tx.amount)}
+                                </p>
+                                <p className="text-[11px] text-slate-400 mt-1 whitespace-nowrap">{formattedDateTime.time}</p>
+                              </div>
                             </div>
                           </button>
                         );
@@ -451,7 +583,7 @@ export default function HomeTab({
               </div>
 
               <div className="fixed bottom-24 right-5 z-40">
-                <button type="button" onClick={openAddForSelectedAccount} className="rounded-full bg-slate-950 p-4 text-white shadow-xl transition hover:scale-105">
+                <button type="button" onClick={openAddForSelectedContext} className="rounded-full bg-slate-950 p-4 text-white shadow-xl transition hover:scale-105">
                   <Plus className="h-6 w-6" />
                 </button>
               </div>
@@ -459,6 +591,7 @@ export default function HomeTab({
           </motion.div>
         )}
       </AnimatePresence>
+
 
       <AnimatePresence>
         {selectedDetailTx && (

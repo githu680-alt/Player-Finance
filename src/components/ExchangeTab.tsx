@@ -10,6 +10,7 @@ import {
   X,
   ArrowLeftRight,
   Receipt,
+  PhoneCall,
 } from 'lucide-react';
 import { memo } from 'react';
 import { Transaction, Player, Account, PaymentAccount } from '../types';
@@ -141,12 +142,12 @@ function ExchangeTab({
           groupedHistory.map((group) => (
             <div key={group.label} className="space-y-2">
               <div className="px-1 text-[11px] font-semibold uppercase tracking-[0.25em] text-slate-500">{group.label}</div>
-              {group.entries.map((tx) => {
+                {group.entries.map((tx) => {
                 const player = players.find((p) => p.id === tx.playerId);
                 const amountStyle = tx.transactionType === 'player' && tx.category === 'Integral Bought' ? 'text-emerald-600' : tx.transactionType === 'player' && tx.category === 'Integral Returned' ? 'text-rose-600' : tx.transactionType === 'transfer' ? 'text-blue-600' : 'text-slate-800';
                 const formatted = formatTransactionDateTime(tx.date);
-                const icon = tx.transactionType === 'transfer' ? <ArrowLeftRight className="h-4 w-4" /> : tx.transactionType === 'player' ? (tx.category === 'Integral Bought' ? <ArrowUpRight className="h-4 w-4" /> : <ArrowDownLeft className="h-4 w-4" />) : tx.transactionType === 'bill' ? <Receipt className="h-4 w-4" /> : <Building2 className="h-4 w-4" />;
-                const paymentLabel = paymentAccounts.find((paymentAccount) => paymentAccount.id === tx.paymentAccountId)?.accountName?.trim() || tx.paymentAccountType?.trim() || 'Payment';
+                const paymentAccount = paymentAccounts.find((paymentAccount) => paymentAccount.id === tx.paymentAccountId);
+                const paymentLabel = paymentAccount?.accountName?.trim() || paymentAccount?.type?.trim() || tx.paymentAccountType?.trim() || tx.paymentAccountNumber?.trim() || 'Payment';
                 const playerName = tx.transactionType === 'player' ? (player?.nickName || player?.playerId || tx.playerName || 'Player') : 'Transfer';
                 const transactionLabel = tx.transactionType === 'player' ? (tx.category === 'Integral Bought' ? 'Bought' : tx.category === 'Integral Returned' ? 'Return' : 'Player') : tx.transactionType === 'transfer' ? 'Transfer' : tx.transactionType === 'owner' ? 'Owner' : 'Bill';
                 const staffSign = typeof window !== 'undefined' ? (() => {
@@ -165,22 +166,31 @@ function ExchangeTab({
                     layout
                     whileTap={{ scale: 0.99 }}
                     onClick={() => setSelectedTransactionId(tx.id)}
-                    className="flex w-full items-center justify-between rounded-[18px] border border-slate-200 bg-white px-3 py-3 text-left shadow-sm"
+                    className="w-full rounded-[18px] border border-slate-200 bg-white px-3 py-3 text-left shadow-sm"
                   >
-                    <div className="flex min-w-0 flex-1 items-center gap-2.5">
-                      <div className={`rounded-2xl p-2 ${tx.transactionType === 'player' && tx.category === 'Integral Bought' ? 'bg-emerald-50 text-emerald-600' : tx.transactionType === 'player' && tx.category === 'Integral Returned' ? 'bg-rose-50 text-rose-600' : tx.transactionType === 'transfer' ? 'bg-blue-50 text-blue-600' : 'bg-slate-100 text-slate-600'}`}>
-                        {icon}
-                      </div>
+                    <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
-                        <p className="truncate text-sm font-semibold text-slate-900">{paymentLabel}</p>
-                        <p className="mt-0.5 truncate text-[12px] text-slate-600">{playerName}</p>
-                        {staffSign ? <p className="mt-0.5 text-[11px] font-semibold text-slate-500">Sign • {staffSign}</p> : null}
-                        <p className="mt-0.5 text-[11px] uppercase tracking-[0.22em] text-slate-400">{transactionLabel}</p>
+                        <div className="flex items-center justify-between gap-3">
+                          <span className={`inline-flex rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.24em] ${tx.transactionType === 'player' && tx.category === 'Integral Bought' ? 'bg-emerald-50 text-emerald-700' : tx.transactionType === 'player' && tx.category === 'Integral Returned' ? 'bg-rose-50 text-rose-700' : tx.transactionType === 'transfer' ? 'bg-slate-100 text-slate-700' : tx.transactionType === 'owner' ? 'bg-blue-50 text-blue-700' : 'bg-amber-50 text-amber-700'}`}>
+                            {transactionLabel}
+                          </span>
+                          <p className={`text-[18px] font-extrabold ${amountStyle}`}>
+                            {tx.transactionType === 'player' && tx.category === 'Integral Bought' ? '+' : tx.transactionType === 'transfer' ? '' : '-'}{formatMMK(tx.amount)}
+                          </p>
+                        </div>
+                        <div className="mt-1.5 flex items-center justify-between gap-3">
+                          <span className="inline-flex items-center gap-2 rounded-full bg-slate-900 px-2.5 py-1 text-[10px] font-semibold text-white">
+                            <PhoneCall className="h-4 w-4" />
+                            {paymentLabel}
+                          </span>
+                          <p className="text-[11px] whitespace-nowrap text-slate-400">{formatted.time}</p>
+                        </div>
+                        <div className="mt-2 flex items-center justify-between">
+                          <p className="truncate text-sm font-semibold text-slate-900 mr-3">{playerName}</p>
+                          {staffSign ? <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-semibold text-slate-600">{staffSign}</span> : null}
+                        </div>
+                        {tx.paymentAccountNumber?.trim() ? <p className="mt-1 truncate text-[11px] text-slate-500">{tx.paymentAccountNumber.trim()}</p> : null}
                       </div>
-                    </div>
-                    <div className="ml-3 text-right">
-                      <p className={`text-sm font-semibold ${amountStyle}`}>{tx.transactionType === 'player' && tx.category === 'Integral Bought' ? '+' : tx.transactionType === 'transfer' ? '' : '-'}{formatMMK(tx.amount)}</p>
-                      <p className="mt-1 text-[11px] text-slate-400">{formatted.time}</p>
                     </div>
                   </motion.button>
                 );

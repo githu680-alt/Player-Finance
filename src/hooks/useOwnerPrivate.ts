@@ -20,11 +20,12 @@ interface UseOwnerPrivateArgs {
   isOpen: boolean;
   data: OwnerPrivateData | null;
   onSave: (data: OwnerPrivateData) => void;
+  onDataChange?: (data: OwnerPrivateData) => void;
   onChangePasscode?: (currentPass: string, newPass: string) => Promise<boolean>;
   onLockNow?: () => void;
 }
 
-export function useOwnerPrivate({ isOpen, data, onSave, onChangePasscode, onLockNow }: UseOwnerPrivateArgs) {
+export function useOwnerPrivate({ isOpen, data, onSave, onDataChange, onChangePasscode, onLockNow }: UseOwnerPrivateArgs) {
   const [local, setLocal] = useState<OwnerPrivateData>(data || { accounts: [], transactions: [] });
   const [activeTab, setActiveTab] = useState<PrivateTabKey>('accounts');
   const [showChangePassModal, setShowChangePassModal] = useState(false);
@@ -76,7 +77,11 @@ export function useOwnerPrivate({ isOpen, data, onSave, onChangePasscode, onLock
 
   const mergedAccounts = [...local.accounts];
   const { accountBalances, totalPrivateBalance, accountLookup } = getPrivateAccountBalanceSummary(mergedAccounts, local.transactions);
-  const displayTransactions = [...local.transactions].sort((a, b) => b.date.localeCompare(a.date));
+  const displayTransactions = [...local.transactions].sort((a, b) => {
+    const timeA = new Date(a.date).getTime();
+    const timeB = new Date(b.date).getTime();
+    return timeB - timeA;
+  });
 
   const openAddAccount = () => {
     setEditingAccount(null);
@@ -104,12 +109,14 @@ export function useOwnerPrivate({ isOpen, data, onSave, onChangePasscode, onLock
         ),
       };
       setLocal(next);
+      if (onDataChange) onDataChange(next);
       onSave(next);
     } else {
       const id = 'priv_acc_' + Date.now().toString();
       const acc: PrivateAccount = { id, name, type: accountForm.type, baseBalance: accountForm.baseBalance };
       const next = { ...local, accounts: [...local.accounts, acc] };
       setLocal(next);
+      if (onDataChange) onDataChange(next);
       onSave(next);
     }
 
@@ -124,6 +131,7 @@ export function useOwnerPrivate({ isOpen, data, onSave, onChangePasscode, onLock
       transactions: local.transactions.filter((item) => item.accountId !== id),
     };
     setLocal(next);
+    if (onDataChange) onDataChange(next);
     onSave(next);
   };
 
@@ -157,11 +165,20 @@ export function useOwnerPrivate({ isOpen, data, onSave, onChangePasscode, onLock
         ...local,
         transactions: local.transactions.map((t) =>
           t.id === editingTx.id
-            ? { ...t, date: safeDate, type: txForm.type, amount: txForm.amount, accountId: txForm.accountId, remark: txForm.remark }
+            ? {
+                ...t,
+                date: safeDate,
+                type: txForm.type,
+                amount: txForm.amount,
+                accountId: txForm.accountId,
+                remark: txForm.remark,
+                sourceTransactionId: editingTx.sourceTransactionId,
+              }
             : t,
         ),
       };
       setLocal(next);
+      if (onDataChange) onDataChange(next);
       onSave(next);
     } else {
       const id = 'priv_tx_' + Date.now().toString();
@@ -175,6 +192,7 @@ export function useOwnerPrivate({ isOpen, data, onSave, onChangePasscode, onLock
       };
       const next = { ...local, transactions: [tx, ...local.transactions] };
       setLocal(next);
+      if (onDataChange) onDataChange(next);
       onSave(next);
     }
 
@@ -185,6 +203,7 @@ export function useOwnerPrivate({ isOpen, data, onSave, onChangePasscode, onLock
     if (!confirm('Delete private transaction?')) return;
     const next = { ...local, transactions: local.transactions.filter((t) => t.id !== id) };
     setLocal(next);
+    if (onDataChange) onDataChange(next);
     onSave(next);
   };
 

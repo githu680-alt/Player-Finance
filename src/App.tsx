@@ -9,6 +9,7 @@ import {
   PaymentAccount,
   PrivateAccount,
   PrivateTransaction,
+  OwnerTransferDirection,
 } from './types';
 import { App as CapacitorApp } from "@capacitor/app";
 
@@ -111,11 +112,15 @@ export default function App() {
   const [isOwnerPrivateOpen, setIsOwnerPrivateOpen] = useState(false);
   const [isOwnerUnlocked, setIsOwnerUnlocked] = useState(false);
   const [ownerPrivateData, setOwnerPrivateData] = useState<{ accounts: any[]; transactions: any[] } | null>(null);
-  const ownerPrivateAccountOptions = (ownerPrivateData?.accounts || []).map((account: any) => ({
-    id: account?.id || '',
-    name: account?.name || account?.accountName || account?.type || 'Unnamed owner account',
-    type: account?.type,
-  }));
+  const [cachedOwnerPrivateAccounts, setCachedOwnerPrivateAccounts] = useState<Array<{ id: string; name: string; type?: string }>>([]);
+  const ownerPrivateAccountOptions = useMemo(() => {
+    return (ownerPrivateData?.accounts || []).map((account: any) => ({
+      id: account?.id || account?.accountId || '',
+      name: account?.name || account?.accountName || account?.type || 'Unnamed owner account',
+      type: account?.type,
+    }));
+  }, [ownerPrivateData]);
+
   const ownerUnlockTimer = useRef<number | null>(null);
   const [ownerPasscode, setOwnerPasscode] = useState<string | null>(null);
   const [pendingRecoveredData, setPendingRecoveredData] = useState<{ accounts: any[]; transactions: any[] } | null>(null);
@@ -124,6 +129,8 @@ export default function App() {
   const [pendingQueue, setPendingQueue] = useState<OfflineOperation[]>([]);
   const [isSyncing, setIsSyncing] = useState(false);
   const pendingQueueRef = useRef<OfflineOperation[]>([]);
+  const lastLocalTransactionsUpdate = useRef<number>(0);
+  const ignoreRemoteTransactionSnapshotsUntil = useRef<number>(0);
 
   const updatePendingQueue = (nextQueue: OfflineOperation[]) => {
     pendingQueueRef.current = nextQueue;
@@ -150,6 +157,8 @@ export default function App() {
   };
 
   const saveLocalTransactions = (uid: string, next: Transaction[]) => {
+    lastLocalTransactionsUpdate.current = Date.now();
+    ignoreRemoteTransactionSnapshotsUntil.current = Date.now() + 3000;
     saveLocalArray<Transaction>(uid, 'transactions', next);
     setTransactions(next);
   };
@@ -165,6 +174,15 @@ export default function App() {
 
   const saveLocalOwnerMeta = (uid: string, payload: any) => {
     saveLocalObject(uid, 'ownerPrivateMeta', payload);
+  };
+
+  const normalizeOwnerPrivateAccounts = (accounts: any[]): PrivateAccount[] => {
+    return (accounts || []).map((account: any, index: number) => ({
+      id: account?.id || account?.accountId || account?.accountID || `owner-${index + 1}`,
+      name: account?.name || account?.accountName || account?.type || 'Unnamed owner account',
+      type: account?.type || account?.accountType || '',
+      baseBalance: account?.baseBalance,
+    }));
   };
 
   const enqueueOrSync = async (operation: OfflineOperation) => {
@@ -191,6 +209,26 @@ export default function App() {
     }
   };
 
+  const sanitizeFirestoreData = (data: Record<string, any>, collectionName?: string) => {
+    const safeData: Record<string, any> = {};
+    Object.entries(data || {}).forEach(([key, value]) => {
+      if (value !== undefined) {
+        safeData[key] = value;
+      }
+    });
+
+    if (collectionName === 'transactions') {
+      if (safeData.paymentAccountType === undefined) {
+        safeData.paymentAccountType = '';
+      }
+      if (safeData.paymentAccountId === undefined) {
+        delete safeData.paymentAccountId;
+      }
+    }
+
+    return safeData;
+  };
+
   const syncOperation = async (operation: OfflineOperation) => {
     if (!user) {
       throw new Error('No authenticated user available for sync');
@@ -200,7 +238,7 @@ export default function App() {
     if (col === 'private') {
       const ref = doc(db, 'users', user.uid, PRIVATE_DOC_ID, PRIVATE_SUBDOC);
       if (type === 'set') {
-        await setDoc(ref, data);
+        await setDoc(ref, sanitizeFirestoreData(data));
       } else {
         await deleteDoc(ref);
       }
@@ -210,7 +248,7 @@ export default function App() {
     if (col === 'privateMeta') {
       const ref = doc(db, 'users', user.uid, PRIVATE_DOC_ID, 'meta');
       if (type === 'set') {
-        await setDoc(ref, data);
+        await setDoc(ref, sanitizeFirestoreData(data));
       } else {
         await deleteDoc(ref);
       }
@@ -219,7 +257,7 @@ export default function App() {
 
     const ref = doc(db, 'users', user.uid, col, docId);
     if (type === 'set') {
-      await setDoc(ref, data);
+      await setDoc(ref, sanitizeFirestoreData(data, col));
     } else {
       await deleteDoc(ref);
     }
@@ -268,12 +306,369 @@ export default function App() {
     };
   };
 
+  const cacheOwnerPrivateAccounts = (accounts: PrivateAccount[]) => {
+    if (!user) return;
+    const normalizedAccounts = normalizeOwnerPrivateAccounts(accounts);
+    const cachedAccounts = normalizedAccounts.map((account) => ({
+      id: account.id,
+      name: account.name,
+      type: account.type,
+    }));
+    saveLocalObject(user.uid, 'ownerPrivateAccounts', cachedAccounts);
+    setCachedOwnerPrivateAccounts(cachedAccounts);
+  };
+
+  const decryptOwnerPrivateData = async (passcode: string): Promise<{ accounts: PrivateAccount[]; transactions: PrivateTransaction[] }> => {
+    if (!user) return { accounts: [], transactions: [] };
+    const offlineState = loadOfflineOwnerEncryptedState(user.uid);
+    let encrypted = offlineState.encrypted;
+
+    if (!encrypted && navigator.onLine) {
+      try {
+        const remoteRef = doc(db, 'users', user.uid, PRIVATE_DOC_ID, PRIVATE_SUBDOC);
+        const snapshot = await getDoc(remoteRef);
+        if (snapshot.exists()) {
+          encrypted = snapshot.data() as any;
+        }
+      } catch (err) {
+        console.warn('Unable to load owner private encrypted payload from Firestore', err);
+      }
+    }
+
+    if (!encrypted) {
+      return { accounts: [], transactions: [] };
+    }
+
+    const decrypted = await decryptJson(passcode, encrypted);
+    return {
+      accounts: normalizeOwnerPrivateAccounts(decrypted.accounts || []),
+      transactions: (decrypted.transactions || []) as PrivateTransaction[],
+    };
+  };
+
+  const saveEncryptedOwnerPrivateData = async (
+    data: { accounts: any[]; transactions: any[] },
+    passcode: string,
+    updateState = false
+  ) => {
+    if (!user) return;
+
+    
+    const normalizedData = {
+      ...data,
+      accounts: normalizeOwnerPrivateAccounts(data.accounts || []),
+    };
+
+    const payload = { ...normalizedData, updatedAt: new Date().toISOString() };
+    const enc = await encryptJson(passcode, payload);
+    const recoveryPass = recoveryPasswordFor(user.uid);
+    const recoveryEnc = await encryptJson(recoveryPass, payload);
+
+    saveLocalOwnerEncrypted(user.uid, enc);
+    saveLocalOwnerMeta(user.uid, { recoveryEncrypted: recoveryEnc });
+
+    const privateOp: OfflineOperation = {
+      id: `op_private_${Date.now()}`,
+      collection: 'private',
+      type: 'set',
+      docId: PRIVATE_SUBDOC,
+      data: enc,
+      createdAt: new Date().toISOString(),
+    };
+    const metaOp: OfflineOperation = {
+      id: `op_private_meta_${Date.now()}`,
+      collection: 'privateMeta',
+      type: 'set',
+      docId: 'meta',
+      data: { recoveryEncrypted: recoveryEnc },
+      createdAt: new Date().toISOString(),
+    };
+
+    const result = await enqueueOrSync(privateOp);
+    await enqueueOrSync(metaOp);
+
+    if (updateState) {
+      setOwnerPrivateData(normalizedData);
+      cacheOwnerPrivateAccounts(normalizedData.accounts || []);
+    }
+
+    return result;
+  };
+
+  type OwnerPrivatePendingAction = 'create' | 'update' | 'delete';
+
+  interface OwnerPrivatePendingOperation {
+    id: string;
+    action: OwnerPrivatePendingAction;
+    sourceTransactionId: string;
+    ownerAccountId: string;
+    ownerTransferDirection: OwnerTransferDirection;
+    date?: string;
+    amount?: number;
+    remark?: string;
+    // optional payload for create/update to carry full/partial owner tx fields
+    payload?: Partial<{
+      date: string;
+      type: string;
+      amount: number;
+      accountId: string;
+      remark?: string;
+    }>;
+  }
+
+  const loadPendingOwnerPrivateOperations = (): OwnerPrivatePendingOperation[] => {
+    if (!user) return [];
+    return loadLocalObject<OwnerPrivatePendingOperation[]>(user.uid, 'ownerPrivatePendingOps') || [];
+  };
+
+  const savePendingOwnerPrivateOperations = (ops: OwnerPrivatePendingOperation[]) => {
+    if (!user) return;
+    saveLocalObject(user.uid, 'ownerPrivatePendingOps', ops);
+  };
+
+  const enqueuePendingOwnerPrivateOperation = async (operation: OwnerPrivatePendingOperation) => {
+    const ops = loadPendingOwnerPrivateOperations();
+    const nextOps = [...ops, operation];
+    savePendingOwnerPrivateOperations(nextOps);
+    try {
+      await persistPendingOwnerPrivateOperations(nextOps);
+    } catch (err) {
+      console.error('Failed to persist owner pending operation immediately', err);
+    }
+  };
+
+  const persistPendingOwnerPrivateOperations = async (operations: OwnerPrivatePendingOperation[]) => {
+    if (!user) return;
+
+    const offlineState = loadOfflineOwnerEncryptedState(user.uid);
+    let recoveryEnc = offlineState.meta?.recoveryEncrypted;
+
+    if (!recoveryEnc && navigator.onLine) {
+      try {
+        const metaRef = doc(db, 'users', user.uid, PRIVATE_DOC_ID, 'meta');
+        const metaSnap = await getDoc(metaRef);
+        if (metaSnap.exists()) {
+          const meta = metaSnap.data() as any;
+          recoveryEnc = meta?.recoveryEncrypted;
+        }
+      } catch (err) {
+        console.warn('Unable to load owner private recovery meta for pending operation persistence', err);
+      }
+    }
+
+    const recoveryPass = recoveryPasswordFor(user.uid);
+    let payload: any = {
+      accounts: [],
+      transactions: [],
+      pendingOwnerPrivateOperations: operations,
+      updatedAt: new Date().toISOString(),
+    };
+
+    if (recoveryEnc) {
+      try {
+        const decrypted = await decryptJson(recoveryPass, recoveryEnc);
+        payload = {
+          ...decrypted,
+          pendingOwnerPrivateOperations: operations,
+          updatedAt: new Date().toISOString(),
+        };
+      } catch (err) {
+        console.warn('Unable to decrypt existing recovery payload; persisting pending operation with empty owner data', err);
+      }
+    }
+
+    const newRecoveryEnc = await encryptJson(recoveryPass, payload);
+    saveLocalOwnerMeta(user.uid, { recoveryEncrypted: newRecoveryEnc });
+
+    const metaOp: OfflineOperation = {
+      id: `op_private_meta_${Date.now()}`,
+      collection: 'privateMeta',
+      type: 'set',
+      docId: 'meta',
+      data: { recoveryEncrypted: newRecoveryEnc },
+      createdAt: new Date().toISOString(),
+    };
+
+    await enqueueOrSync(metaOp);
+  };
+
+  const applyOwnerPrivatePendingOperations = async (passcode: string) => {
+    if (!user) return;
+
+    // Load pending ops from local storage
+    let pendingOps = loadPendingOwnerPrivateOperations();
+
+    // Also attempt to merge pending ops persisted in the recoveryEncrypted meta
+    try {
+      const offlineState = loadOfflineOwnerEncryptedState(user.uid);
+      let recoveryEnc = offlineState.meta?.recoveryEncrypted;
+      if (!recoveryEnc && navigator.onLine) {
+        try {
+          const metaRef = doc(db, 'users', user.uid, PRIVATE_DOC_ID, 'meta');
+          const metaSnap = await getDoc(metaRef);
+          if (metaSnap.exists()) {
+            const meta = metaSnap.data() as any;
+            recoveryEnc = meta?.recoveryEncrypted;
+          }
+        } catch (err) {
+          console.warn('Unable to fetch recovery meta while applying pending ops', err);
+        }
+      }
+
+      if (recoveryEnc) {
+        try {
+          const recPass = recoveryPasswordFor(user.uid);
+          const decrypted = await decryptJson(recPass, recoveryEnc);
+          const remotePending: OwnerPrivatePendingOperation[] = (decrypted.pendingOwnerPrivateOperations || []) as OwnerPrivatePendingOperation[];
+          if (remotePending && remotePending.length > 0) {
+            const existingIds = new Set(pendingOps.map((o) => o.id));
+            const merged = [...pendingOps];
+            for (const r of remotePending) {
+              if (!existingIds.has(r.id)) merged.push(r);
+            }
+            if (merged.length !== pendingOps.length) {
+              pendingOps = merged;
+              savePendingOwnerPrivateOperations(pendingOps);
+            }
+          }
+        } catch (err) {
+          console.warn('Unable to decrypt recovery meta pending ops', err);
+        }
+      }
+    } catch (err) {
+      console.warn('Failed to merge remote pending owner ops', err);
+    }
+
+    if (pendingOps.length === 0) return;
+
+    const ownerData = await decryptOwnerPrivateData(passcode);
+    const nextOwnerData = {
+      accounts: ownerData.accounts,
+      transactions: [...(ownerData.transactions || [])],
+    };
+    let changed = false;
+
+    for (const op of pendingOps) {
+      if (op.action === 'create') {
+                const selectedOwnerAccount = nextOwnerData.accounts.find(
+          (acc: any) => acc.id === op.ownerAccountId || acc.accountId === op.ownerAccountId
+        );
+        if (!selectedOwnerAccount) continue;
+
+        nextOwnerData.transactions.unshift({
+          id: `priv_tx_${Date.now()}_${op.id}`,
+          sourceTransactionId: op.sourceTransactionId,
+          date: op.date,
+          type: op.ownerTransferDirection === 'business_to_owner' ? 'Income' : 'Expense',
+          amount: op.amount,
+          accountId: selectedOwnerAccount.id,
+          remark: op.remark,
+        });
+        changed = true;
+      } else if (op.action === 'delete') {
+                const filtered = nextOwnerData.transactions.filter((tx: any) => {
+          if (tx.sourceTransactionId === op.sourceTransactionId) return false;
+          if (!tx.sourceTransactionId) {
+            return !(
+              tx.date === op.date &&
+              tx.amount === op.amount &&
+              tx.accountId === op.ownerAccountId &&
+              tx.remark === op.remark
+            );
+          }
+          return true;
+        });
+        if (filtered.length !== nextOwnerData.transactions.length) {
+          nextOwnerData.transactions = filtered;
+          changed = true;
+        }
+      } else if (op.action === 'update') {
+                // Find by sourceTransactionId
+        const idx = nextOwnerData.transactions.findIndex((tx: any) => tx.sourceTransactionId === op.sourceTransactionId);
+        if (idx !== -1) {
+          const existing = nextOwnerData.transactions[idx];
+          const updated = { ...existing };
+          // Apply payload fields if present, otherwise fall back to op fields
+          if (op.payload) {
+            if (op.payload.date !== undefined) updated.date = op.payload.date;
+            if (op.payload.type !== undefined) updated.type = op.payload.type;
+            if (op.payload.amount !== undefined) updated.amount = op.payload.amount;
+            if (op.payload.accountId !== undefined) updated.accountId = op.payload.accountId;
+            if (op.payload.remark !== undefined) updated.remark = op.payload.remark;
+          } else {
+            if (op.date !== undefined) updated.date = op.date;
+            if (op.amount !== undefined) updated.amount = op.amount;
+            if (op.remark !== undefined) updated.remark = op.remark;
+            if (op.ownerAccountId) updated.accountId = op.ownerAccountId;
+          }
+          nextOwnerData.transactions[idx] = updated;
+          changed = true;
+        } else {
+          // If not found, try fallback matching by fields and update the first match
+          const fallbackIdx = nextOwnerData.transactions.findIndex((tx: any) => {
+            return (
+              tx.date === op.date &&
+              tx.amount === op.amount &&
+              tx.accountId === op.ownerAccountId &&
+              tx.remark === op.remark
+            );
+          });
+          if (fallbackIdx !== -1) {
+            const existing = nextOwnerData.transactions[fallbackIdx];
+            const updated = { ...existing };
+            if (op.payload) {
+              if (op.payload.date !== undefined) updated.date = op.payload.date;
+              if (op.payload.type !== undefined) updated.type = op.payload.type;
+              if (op.payload.amount !== undefined) updated.amount = op.payload.amount;
+              if (op.payload.accountId !== undefined) updated.accountId = op.payload.accountId;
+              if (op.payload.remark !== undefined) updated.remark = op.payload.remark;
+            }
+            nextOwnerData.transactions[fallbackIdx] = updated;
+            changed = true;
+          }
+        }
+      }
+    }
+
+    if (changed) {
+      // Ensure updated owner data is persisted and state is updated immediately
+      await saveEncryptedOwnerPrivateData(nextOwnerData, passcode, true);
+      setOwnerPrivateData(nextOwnerData);
+      // Clear persisted pending ops both locally and from recovery meta
+      try {
+        savePendingOwnerPrivateOperations([]);
+        await persistPendingOwnerPrivateOperations([]);
+      } catch (err) {
+        console.warn('Failed to clear persisted pending owner ops after apply', err);
+      }
+    }
+    
+  };
+
+  useEffect(() => {
+    if (!user) return;
+    const cachedAccounts = loadLocalObject<Array<{ id: string; name: string; type?: string }>>(user.uid, 'ownerPrivateAccounts') || [];
+    setCachedOwnerPrivateAccounts(cachedAccounts);
+  }, [user]);
+
   const loadLatestOwnerPrivateData = async (passcode: string): Promise<{ accounts: PrivateAccount[]; transactions: PrivateTransaction[] }> => {
     if (!user) return { accounts: [], transactions: [] };
     if (ownerPrivateData) return ownerPrivateData;
  
     const offlineState = loadOfflineOwnerEncryptedState(user.uid);
-    const encrypted = offlineState.encrypted;
+    let encrypted = offlineState.encrypted;
+ 
+    if (!encrypted && navigator.onLine) {
+      try {
+        const remoteRef = doc(db, 'users', user.uid, PRIVATE_DOC_ID, PRIVATE_SUBDOC);
+        const snapshot = await getDoc(remoteRef);
+        if (snapshot.exists()) {
+          encrypted = snapshot.data() as any;
+        }
+      } catch (err) {
+        console.warn('Unable to load owner private encrypted payload from Firestore', err);
+      }
+    }
  
     if (!encrypted) {
       return { accounts: [], transactions: [] };
@@ -282,20 +677,26 @@ export default function App() {
     try {
       const decrypted = await decryptJson(passcode, encrypted);
       const ownerData = {
-        accounts: (decrypted.accounts || []) as PrivateAccount[],
+        accounts: normalizeOwnerPrivateAccounts(decrypted.accounts || []),
         transactions: (decrypted.transactions || []) as PrivateTransaction[],
       };
+      cacheOwnerPrivateAccounts(ownerData.accounts);
       setOwnerPrivateData(ownerData);
-      console.log('DECRYPTED =', decrypted);
-      console.log('DECRYPTED.accounts =', decrypted.accounts);
-      console.log('DECRYPTED.transactions =', decrypted.transactions);
-      console.log('RETURN ownerData =', ownerData);
       return ownerData;
     } catch (err) {
       console.warn('Unable to decrypt owner private data with current passcode', err);
       return { accounts: [], transactions: [] };
     }
   };
+
+  useEffect(() => {
+    if (!user || !ownerPasscode || ownerPrivateData) return;
+    loadLatestOwnerPrivateData(ownerPasscode)
+      .then(() => applyOwnerPrivatePendingOperations(ownerPasscode))
+      .catch((err) => {
+        console.warn('Failed to preload owner private accounts', err);
+      });
+  }, [user, ownerPasscode, ownerPrivateData, loadLatestOwnerPrivateData]);
  
   // 4. Entity State for Modals
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
@@ -369,13 +770,23 @@ export default function App() {
             const txsToMigrate = (localTxs.length > 0 ? localTxs : INITIAL_TRANSACTIONS).map((t) => normalizeTransaction(t));
             const accountsToMigrate = localAccounts.length > 0 ? localAccounts : DEFAULT_ACCOUNTS;
 
+            const sanitizeForFirestore = <T extends Record<string, any>>(doc: T): Partial<T> => {
+              const safeDoc: Partial<T> = {};
+              Object.entries(doc).forEach(([key, value]) => {
+                if (value !== undefined) {
+                  safeDoc[key as keyof T] = value;
+                }
+              });
+              return safeDoc;
+            };
+
             // Add batch write commands
             playersToMigrate.forEach((p) => {
               batch.set(doc(db, 'users', currentUser.uid, 'players', p.id), p);
             });
 
             txsToMigrate.forEach((t) => {
-              batch.set(doc(db, 'users', currentUser.uid, 'transactions', t.id), t);
+              batch.set(doc(db, 'users', currentUser.uid, 'transactions', t.id), sanitizeForFirestore(t));
             });
 
             accountsToMigrate.forEach((a) => {
@@ -401,7 +812,7 @@ export default function App() {
                 batch.set(doc(db, 'users', currentUser.uid, 'players', p.id), p);
               });
               INITIAL_TRANSACTIONS.forEach((t) => {
-                batch.set(doc(db, 'users', currentUser.uid, 'transactions', t.id), t);
+                batch.set(doc(db, 'users', currentUser.uid, 'transactions', t.id), sanitizeFirestoreData(t, 'transactions'));
               });
               DEFAULT_ACCOUNTS.forEach((a) => {
                 batch.set(doc(db, 'users', currentUser.uid, 'accounts', a.id), a);
@@ -433,11 +844,17 @@ export default function App() {
             data.id = doc.id;
             list.push(normalizeTransaction(data));
           });
-          setTransactions(list);
-          if (pendingQueueRef.current.length === 0) {
-            saveLocalArray<Transaction>(currentUser.uid, 'transactions', list);
+
+          const recentLocalUpdate = Date.now() - lastLocalTransactionsUpdate.current < 3000;
+          const ignoreRemoteSnapshot = pendingQueueRef.current.length > 0 || Date.now() < ignoreRemoteTransactionSnapshotsUntil.current || recentLocalUpdate;
+          if (ignoreRemoteSnapshot) {
+            return;
           }
+
+          setTransactions(list);
+          saveLocalArray<Transaction>(currentUser.uid, 'transactions', list);
         });
+
  
         const unsubAccounts = onSnapshot(accountsRef, (snapshot) => {
           const list: Account[] = [];
@@ -810,7 +1227,7 @@ useEffect(() => {
     setIsTxModalOpen(true);
   }, []);
 
-  const handleSaveTransaction = useCallback(async (txData: Omit<Transaction, 'id'>, editId?: string) => {
+  const handleSaveTransaction = useCallback(async (txData: Omit<Transaction, 'id'>, editId?: string, options?: { skipOwnerSync?: boolean }) => {
     if (!user) throw new Error('User is not authenticated');
 
     const previousTransactions = transactions;
@@ -837,7 +1254,7 @@ useEffect(() => {
         const newPaymentAccount: PaymentAccount = {
           id: newPayId,
           playerId: txData.playerId,
-          type: txData.paymentAccountType,
+          type: txData.paymentAccountType || '',
           accountName: '',
           accountNumber: txData.paymentAccountNumber,
           note: 'Created from transaction',
@@ -891,51 +1308,85 @@ useEffect(() => {
         await enqueueOrSync(op);
       }
 
-      if (normalizedTransaction.transactionType === 'owner' && normalizedTransaction.ownerCategory === 'transfer') {
-        const passcode = ownerPasscode;
-        if (passcode) {
+      if (!options?.skipOwnerSync && normalizedTransaction.transactionType === 'owner' && normalizedTransaction.ownerCategory === 'transfer') {
+        const ownerAction: OwnerPrivatePendingAction = editId ? 'update' : 'create';
+        const ownerOp: OwnerPrivatePendingOperation = {
+          id: `op_owner_sync_${normalizedTransaction.id}_${Date.now()}`,
+          action: ownerAction,
+          sourceTransactionId: normalizedTransaction.id,
+          ownerAccountId: normalizedTransaction.ownerAccountId || '',
+          ownerTransferDirection: normalizedTransaction.ownerTransferDirection || 'owner_to_business',
+          date: normalizedTransaction.date,
+          amount: normalizedTransaction.amount,
+          remark:
+            normalizedTransaction.ownerTransferDirection === 'business_to_owner'
+              ? 'Received from Business'
+              : 'Sent to Business',
+          payload: {
+            date: normalizedTransaction.date,
+            type: normalizedTransaction.ownerTransferDirection === 'business_to_owner' ? 'Income' : 'Expense',
+            amount: normalizedTransaction.amount,
+            accountId: normalizedTransaction.ownerAccountId || '',
+            remark:
+              normalizedTransaction.ownerTransferDirection === 'business_to_owner'
+                ? 'Received from Business'
+                : 'Sent to Business',
+          },
+        };
+
+        const ownerDataInMemory = ownerPrivateData;
+        if (ownerDataInMemory && ownerPasscode) {
           try {
-            const ownerData = await loadLatestOwnerPrivateData(passcode);
-            console.log('ownerAccountId =', normalizedTransaction.ownerAccountId);
-            console.log('ownerData.accounts =', ownerData.accounts);
-            console.log(
-              ownerData.accounts.map((a) => ({
-                id: a.id,
-                name: a.name,
-              }))
+            const selectedOwnerAccount = ownerDataInMemory.accounts.find(
+              (acc: any) => acc.id === ownerOp.ownerAccountId || acc.accountId === ownerOp.ownerAccountId
             );
-            const selectedOwnerAccount = ownerData.accounts.find((acc) => acc.id === normalizedTransaction.ownerAccountId);
-            console.log('selectedOwnerAccount =', selectedOwnerAccount);
 
             if (!selectedOwnerAccount) {
               console.warn('Owner transfer skipped because no matching owner private account was found', {
-                ownerAccountId: normalizedTransaction.ownerAccountId,
+                ownerAccountId: ownerOp.ownerAccountId,
               });
+              enqueuePendingOwnerPrivateOperation(ownerOp);
               return transactionResult;
             }
 
-            const privateTx = {
-              id: `priv_tx_${Date.now()}`,
+            const existingOwnerTxIndex = ownerDataInMemory.transactions.findIndex(
+              (tx: any) => tx.sourceTransactionId === normalizedTransaction.id
+            );
+
+            const privateTx: PrivateTransaction = {
+              id: existingOwnerTxIndex !== -1 ? ownerDataInMemory.transactions[existingOwnerTxIndex].id : `priv_tx_${Date.now()}`,
+              sourceTransactionId: normalizedTransaction.id,
               date: normalizedTransaction.date,
-              type: normalizedTransaction.ownerTransferDirection === 'business_to_owner' ? 'Income' : 'Expense',
+              type: ownerOp.ownerTransferDirection === 'business_to_owner' ? 'Income' : 'Expense',
               amount: normalizedTransaction.amount,
               accountId: selectedOwnerAccount.id,
-              remark:
-                normalizedTransaction.ownerTransferDirection === 'business_to_owner'
-                  ? 'Received from Business'
-                  : 'Sent to Business',
+              remark: ownerOp.remark,
             };
 
             const nextOwnerData = {
-              accounts: ownerData.accounts,
-              transactions: [privateTx, ...(ownerData.transactions || [])],
+              accounts: ownerDataInMemory.accounts,
+              transactions:
+                existingOwnerTxIndex !== -1
+                  ? ownerDataInMemory.transactions.map((tx, index) =>
+                      index === existingOwnerTxIndex ? privateTx : tx
+                    )
+                  : [privateTx, ...(ownerDataInMemory.transactions || [])],
             };
 
+            console.debug('Owner sync: apply business update to owner private transaction', {
+              transactionId: normalizedTransaction.id,
+              ownerTxId: privateTx.id,
+              existingOwnerTxIndex,
+            });
+
             setOwnerPrivateData(nextOwnerData);
-            await saveOwnerPrivateData(nextOwnerData, passcode);
+            await saveOwnerPrivateData(nextOwnerData, ownerPasscode);
           } catch (err) {
             console.error('Failed to update owner private data from business transaction', err);
+            enqueuePendingOwnerPrivateOperation(ownerOp);
           }
+        } else {
+          enqueuePendingOwnerPrivateOperation(ownerOp);
         }
       }
 
@@ -954,11 +1405,13 @@ useEffect(() => {
     await deleteDoc(doc(db, 'users', user.uid, 'paymentAccounts', idToRemove));
   };
 
-  const handleDeleteTransaction = async (txId: string) => {
+  const handleDeleteTransaction = async (txId: string, options?: { skipOwnerSync?: boolean }) => {
     if (!user) return;
 
+    const deletedTx = transactions.find((tx) => tx.id === txId);
     const previousTransactions = transactions;
     const nextTransactions = transactions.filter((tx) => tx.id !== txId);
+
     saveLocalTransactions(user.uid, nextTransactions);
 
     const deleteOp: OfflineOperation = {
@@ -971,6 +1424,79 @@ useEffect(() => {
 
     try {
       await enqueueOrSync(deleteOp);
+
+      if (!options?.skipOwnerSync && deletedTx?.transactionType === 'owner' && deletedTx.ownerCategory === 'transfer') {
+        try {
+          const currentOwnerData = ownerPrivateData;
+          if (!currentOwnerData) {
+                        if (deletedTx) {
+              const ownerOp: OwnerPrivatePendingOperation = {
+                id: `op_owner_sync_delete_${txId}_${Date.now()}`,
+                action: 'delete',
+                sourceTransactionId: txId,
+                ownerAccountId: deletedTx.ownerAccountId || '',
+                ownerTransferDirection: deletedTx.ownerTransferDirection || 'owner_to_business',
+                date: deletedTx.date,
+                amount: deletedTx.amount,
+                remark:
+                  deletedTx.ownerTransferDirection === 'business_to_owner'
+                    ? 'Received from Business'
+                    : 'Sent to Business',
+              };
+              enqueuePendingOwnerPrivateOperation(ownerOp);
+            }
+          } else {
+            const fallbackRemark = deletedTx.ownerTransferDirection === 'business_to_owner'
+              ? 'Received from Business'
+              : 'Sent to Business';
+
+            const updatedOwnerTransactions = currentOwnerData.transactions.filter((tx: any) => {
+              if (tx.sourceTransactionId === txId) return false;
+              if (!tx.sourceTransactionId) {
+                return !(
+                  tx.date === deletedTx.date &&
+                  tx.amount === deletedTx.amount &&
+                  tx.accountId === deletedTx.ownerAccountId &&
+                  tx.remark === fallbackRemark
+                );
+              }
+              return true;
+            });
+
+            if (updatedOwnerTransactions.length !== currentOwnerData.transactions.length) {
+              const nextOwnerData = {
+                accounts: currentOwnerData.accounts,
+                transactions: updatedOwnerTransactions,
+              };
+
+              setOwnerPrivateData(nextOwnerData);
+              if (ownerPasscode) {
+                await saveOwnerPrivateData(nextOwnerData, ownerPasscode);
+              }
+            } else {
+            }
+          }
+        } catch (err) {
+          console.error('Failed to sync delete with owner private transaction', err);
+          if (deletedTx) {
+            const ownerOp: OwnerPrivatePendingOperation = {
+              id: `op_owner_sync_delete_${txId}_${Date.now()}`,
+              action: 'delete',
+              sourceTransactionId: txId,
+              ownerAccountId: deletedTx.ownerAccountId || '',
+              ownerTransferDirection: deletedTx.ownerTransferDirection || 'owner_to_business',
+              date: deletedTx.date,
+              amount: deletedTx.amount,
+              remark:
+                deletedTx.ownerTransferDirection === 'business_to_owner'
+                  ? 'Received from Business'
+                  : 'Sent to Business',
+            };
+            enqueuePendingOwnerPrivateOperation(ownerOp);
+          }
+        }
+      }
+
     } catch (err) {
       saveLocalTransactions(user.uid, previousTransactions);
       throw err;
@@ -1069,6 +1595,7 @@ useEffect(() => {
         setIsOwnerUnlocked(true);
         setIsOwnerPassOpen(false);
         setIsOwnerPrivateOpen(true);
+        await applyOwnerPrivatePendingOperations(passcode);
       } catch (err) {
         console.error('Failed to set new passcode', err);
         alert('Failed to set new passcode');
@@ -1099,22 +1626,30 @@ useEffect(() => {
         const empty = { accounts: [], transactions: [], createdAt: new Date().toISOString() };
         await saveOwnerPrivateData(empty, passcode);
         setOwnerPrivateData(empty);
+        cacheOwnerPrivateAccounts(empty.accounts);
         setOwnerPasscode(passcode);
         setOwnerPassMode('unlock');
         setIsOwnerUnlocked(true);
         setIsOwnerPassOpen(false);
         setIsOwnerPrivateOpen(true);
+        await applyOwnerPrivatePendingOperations(passcode);
         return;
       }
 
       const decrypted = await decryptJson(passcode, encrypted);
-      const ownerData = { accounts: decrypted.accounts || [], transactions: decrypted.transactions || [] };
+      const ownerData = {
+        accounts: normalizeOwnerPrivateAccounts(decrypted.accounts || []),
+        transactions: (decrypted.transactions || []) as PrivateTransaction[],
+      };
       setOwnerPrivateData(ownerData);
+      cacheOwnerPrivateAccounts(ownerData.accounts);
       setOwnerPasscode(passcode);
       setOwnerPassMode('unlock');
       setIsOwnerUnlocked(true);
       setIsOwnerPassOpen(false);
       setIsOwnerPrivateOpen(true);
+
+      await applyOwnerPrivatePendingOperations(passcode);
 
       // If recovery backup is missing, ensure it's created for future recovery.
       const metaRef = doc(db, 'users', user.uid, PRIVATE_DOC_ID, 'meta');
@@ -1137,21 +1672,181 @@ useEffect(() => {
     }
   };
 
+  const syncOwnerPrivateChangesToBusiness = async (
+    previousData: { accounts: any[]; transactions: any[] },
+    nextData: { accounts: any[]; transactions: any[] }
+  ): Promise<{ accounts: any[]; transactions: any[] }> => {
+    if (!user) return nextData;
+
+    const prevSourceIds = new Set(previousData.transactions.map((tx) => tx.sourceTransactionId).filter(Boolean) as string[]);
+    const nextSourceIds = new Set(nextData.transactions.map((tx) => tx.sourceTransactionId).filter(Boolean) as string[]);
+    const updatedOwnerTransactions = nextData.transactions.map((tx) => ({ ...tx }));
+
+    // Deletes: owner private tx removed
+    for (const prevTx of previousData.transactions) {
+      if (!prevTx.sourceTransactionId) continue;
+      if (!nextSourceIds.has(prevTx.sourceTransactionId)) {
+        console.debug('Owner sync: deleting linked business transaction', { sourceTransactionId: prevTx.sourceTransactionId });
+        await handleDeleteTransaction(prevTx.sourceTransactionId, { skipOwnerSync: true });
+      }
+    }
+
+    // Updates: owner private tx exists in both and has changed
+    for (const nextTx of nextData.transactions) {
+      if (!nextTx.sourceTransactionId) continue;
+      const prevTx = previousData.transactions.find((tx) => tx.sourceTransactionId === nextTx.sourceTransactionId);
+      if (!prevTx) continue;
+
+      const hasChanges =
+        prevTx.date !== nextTx.date ||
+        prevTx.amount !== nextTx.amount ||
+        prevTx.accountId !== nextTx.accountId ||
+        prevTx.remark !== nextTx.remark ||
+        prevTx.type !== nextTx.type;
+
+      if (!hasChanges) continue;
+
+      const businessTx = transactions.find((tx) => tx.id === nextTx.sourceTransactionId);
+      if (!businessTx) {
+        console.warn('Owner sync update skipped because linked business transaction was not found', nextTx.sourceTransactionId);
+        continue;
+      }
+
+      const ownerTransferDirection =
+        nextTx.type?.toLowerCase() === 'income'
+          ? 'business_to_owner'
+          : nextTx.type?.toLowerCase() === 'expense'
+          ? 'owner_to_business'
+          : businessTx.ownerTransferDirection || 'owner_to_business';
+
+      const updatedBusinessTx: Transaction = {
+        ...businessTx,
+        date: nextTx.date,
+        amount: nextTx.amount,
+        remark: nextTx.remark ?? businessTx.remark,
+        ownerAccountId: nextTx.accountId,
+        ownerTransferDirection,
+        ownerCategory: 'transfer',
+        paymentAccountId: nextTx.accountId,
+        paymentAccountType: businessTx.paymentAccountType,
+      };
+
+      console.debug('Owner sync: updating linked business transaction', {
+        sourceTransactionId: nextTx.sourceTransactionId,
+        updatedBusinessTx,
+      });
+
+      const nextTransactions = transactions.map((tx) =>
+        tx.id === businessTx.id ? updatedBusinessTx : tx
+      );
+
+      saveLocalTransactions(user.uid, nextTransactions);
+
+      const updateOp: OfflineOperation = {
+        id: `op_tx_${businessTx.id}_${Date.now()}`,
+        collection: 'transactions',
+        type: 'set',
+        docId: businessTx.id,
+        data: updatedBusinessTx,
+        createdAt: new Date().toISOString(),
+      };
+
+      await enqueueOrSync(updateOp);
+    }
+
+    // Creates: owner private tx added locally and not yet linked to business
+    for (let i = 0; i < updatedOwnerTransactions.length; i += 1) {
+      const ownerTx = updatedOwnerTransactions[i];
+      if (ownerTx.sourceTransactionId) continue;
+      if (ownerTx.type !== 'Income' && ownerTx.type !== 'Expense') continue;
+
+      const ownerAccount = nextData.accounts.find((acc) => acc.id === ownerTx.accountId || acc.accountId === ownerTx.accountId);
+      if (!ownerAccount) {
+        console.warn('Owner sync skipped create because owner account not found', { accountId: ownerTx.accountId });
+        continue;
+      }
+
+      const ownerTransferDirection = ownerTx.type === 'Income' ? 'business_to_owner' : 'owner_to_business';
+      const businessTx: Transaction = normalizeTransaction({
+        id: `tx_${Date.now().toString()}`,
+        transactionType: 'owner',
+        playerId: '',
+        playerName: '',
+        category: 'Owner Transfer',
+        amount: ownerTx.amount,
+        account: ownerTx.accountId || '',
+        paymentAccountId: ownerTx.accountId,
+        paymentAccountType: ownerAccount.type,
+        ownerCategory: 'transfer',
+        ownerTransferDirection,
+        ownerAccountId: ownerTx.accountId,
+        billName: '',
+        date: ownerTx.date,
+        remark: ownerTx.remark || (ownerTransferDirection === 'business_to_owner' ? 'Received from Business' : 'Sent to Business'),
+      });
+
+      console.debug('Owner sync: creating linked business transaction', {
+        ownerTxId: ownerTx.id,
+        businessTxId: businessTx.id,
+      });
+
+      const nextTransactions = [...transactions, businessTx];
+      saveLocalTransactions(user.uid, nextTransactions);
+
+      const createOp: OfflineOperation = {
+        id: `op_tx_${businessTx.id}_${Date.now()}`,
+        collection: 'transactions',
+        type: 'set',
+        docId: businessTx.id,
+        data: businessTx,
+        createdAt: new Date().toISOString(),
+      };
+
+      await enqueueOrSync(createOp);
+      updatedOwnerTransactions[i] = { ...ownerTx, sourceTransactionId: businessTx.id };
+    }
+
+    return {
+      ...nextData,
+      transactions: updatedOwnerTransactions,
+    };
+  };
+
+  const handleSaveOwnerPrivateData = async (data: { accounts: any[]; transactions: any[] }) => {
+    if (!ownerPrivateData) {
+      if (!ownerPasscode) return;
+      await saveOwnerPrivateData(data, ownerPasscode);
+      return;
+    }
+
+    console.debug('Owner save: syncing private data to business with previous and next data', {
+      hasPrevious: Boolean(ownerPrivateData),
+      previousTxCount: ownerPrivateData.transactions.length,
+      nextTxCount: data.transactions.length,
+    });
+
+    const syncedData = await syncOwnerPrivateChangesToBusiness(ownerPrivateData, data);
+    if (!ownerPasscode) return;
+    await saveOwnerPrivateData(syncedData, ownerPasscode);
+  };
+
   async function saveOwnerPrivateData(data: { accounts: any[]; transactions: any[] }, passcode: string) {
     if (!user) return;
 
-    console.log('SAVE ownerPrivateData =', data);
-    console.log('SAVE accounts =', data.accounts);
-    console.log('SAVE transactions =', data.transactions);
+    const normalizedData = {
+      ...data,
+      accounts: normalizeOwnerPrivateAccounts(data.accounts || []),
+    };
 
-    const payload = { ...data, updatedAt: new Date().toISOString() };
+    const payload = { ...normalizedData, updatedAt: new Date().toISOString() };
     const enc = await encryptJson(passcode, payload);
     const recoveryPass = recoveryPasswordFor(user.uid);
     const recoveryEnc = await encryptJson(recoveryPass, payload);
 
     saveLocalOwnerEncrypted(user.uid, enc);
     saveLocalOwnerMeta(user.uid, { recoveryEncrypted: recoveryEnc });
-    setOwnerPrivateData(data);
+    setOwnerPrivateData(normalizedData);
+    cacheOwnerPrivateAccounts(normalizedData.accounts || []);
 
     const privateOp: OfflineOperation = {
       id: `op_private_${Date.now()}`,
@@ -1316,8 +2011,9 @@ useEffect(() => {
         onSave={async (d) => {
           const pass = ownerPasscode;
           if (!pass) return alert('Owner locked. Please unlock with passcode first.');
-          await saveOwnerPrivateData(d, pass);
+          await handleSaveOwnerPrivateData(d);
         }}
+        onDataChange={(d) => setOwnerPrivateData(d)}
         onChangePasscode={handleChangeOwnerPasscode}
         onLockNow={handleLockOwner}
       />
@@ -1515,7 +2211,11 @@ useEffect(() => {
         defaultPaymentAccountId={defaultPaymentAccountIdForTx}
         accounts={accounts}
         paymentAccounts={paymentAccounts}
-        ownerPrivateAccounts={ownerPrivateAccountOptions}
+        ownerPrivateAccounts={
+  ownerPrivateAccountOptions.length > 0
+    ? ownerPrivateAccountOptions
+    : cachedOwnerPrivateAccounts
+}
         initialQuickAction={quickActionPreset}
       />
 

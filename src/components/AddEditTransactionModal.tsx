@@ -1,4 +1,85 @@
 import React, { useState, useEffect } from 'react';
+
+function StaffSignPicker({
+  value,
+  options,
+  disabled,
+  onSelect,
+  onSave,
+}: {
+  value: string;
+  options: string[];
+  disabled: boolean;
+  onSelect: (sign: string) => void;
+  onSave: (sign: string) => void;
+}) {
+  const [draft, setDraft] = useState('');
+  const [showInput, setShowInput] = useState(false);
+
+  const handleSave = () => {
+    const nextValue = draft.trim().toUpperCase();
+    if (!nextValue) return;
+    onSave(nextValue);
+    setDraft('');
+    setShowInput(false);
+  };
+
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-slate-500">Staff sign</p>
+          <p className="mt-1 text-xs text-slate-500">Pick a saved sign or add a new one.</p>
+        </div>
+        <div className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500 shadow-sm">
+          {value || 'None'}
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap gap-2">
+        {options.map((option) => (
+          <button
+            key={option}
+            type="button"
+            onClick={() => onSelect(option)}
+            disabled={disabled}
+            className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-70 ${value === option ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'}`}
+          >
+            {option}
+          </button>
+        ))}
+        <button
+          type="button"
+          onClick={() => setShowInput((current) => !current)}
+          disabled={disabled}
+          className="rounded-full border border-dashed border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition-all hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          + Add New
+        </button>
+      </div>
+
+      {showInput && (
+        <div className="mt-3 flex gap-2">
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value.toUpperCase())}
+            placeholder="Type sign"
+            disabled={disabled}
+            className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          />
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={disabled || !draft.trim()}
+            className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-70"
+          >
+            Save
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
 import { motion, AnimatePresence } from 'motion/react';
 import { X, Search, Wallet, Calendar, FileText, Clock, Receipt, CheckCircle2, ArrowLeftRight } from 'lucide-react';
 import { Player, Transaction, TransactionCategory, AccountType, Account, PaymentAccount, TransactionType, OwnerCategory } from '../types';
@@ -62,7 +143,6 @@ export default function AddEditTransactionModal({
   const [staffSign, setStaffSign] = useState('');
   const [staffSignInput, setStaffSignInput] = useState('');
   const [staffSignOptions, setStaffSignOptions] = useState<string[]>([]);
-  const [showStaffSignInput, setShowStaffSignInput] = useState(false);
   const [error, setError] = useState('');
 
   const filteredPlayers = players.filter((p) => {
@@ -91,7 +171,7 @@ export default function AddEditTransactionModal({
     }
   };
 
-  const saveStaffSign = (value: string) => {
+  const updateStaffSignOptions = (value: string) => {
     const normalized = value.trim().toUpperCase();
     if (!normalized) return;
 
@@ -99,11 +179,12 @@ export default function AddEditTransactionModal({
     setStaffSignOptions(nextSigns);
     setStaffSign(normalized);
     setStaffSignInput('');
-    setShowStaffSignInput(false);
     persistStaffSignState(nextSigns, normalized);
   };
 
-  const ownerAccountOptions = Array.isArray(ownerPrivateAccounts) ? ownerPrivateAccounts : [];
+  const saveStaffSign = (value: string) => {
+    updateStaffSignOptions(value);
+  };
 
   useEffect(() => {
     if (!isOpen) {
@@ -253,7 +334,6 @@ export default function AddEditTransactionModal({
       const lastUsedStaffSign = window.localStorage.getItem('player-finance-last-staff-sign') || '';
       setStaffSignOptions(storedSigns);
       setStaffSign(lastUsedStaffSign);
-      setShowStaffSignInput(false);
       setStaffSignInput('');
     }
     setError('');
@@ -382,7 +462,7 @@ export default function AddEditTransactionModal({
           ownerCategory: 'transfer',
           ownerTransferDirection,
           ownerAccountId,
-          paymentAccountId: selectedPaymentAccount?.id || undefined,
+          paymentAccountId: ownerAccountId,
           paymentAccountType: paymentAccountTypeValue || undefined,
           paymentAccountNumber: paymentAccountNumberValue,
           date: `${date}T${time}`,
@@ -677,9 +757,16 @@ export default function AddEditTransactionModal({
                       </div>
                       <select value={ownerAccountId} onChange={(e) => setOwnerAccountId(e.target.value)} className="block w-full pl-10 pr-10 py-2.5 bg-slate-50 text-slate-850 text-sm rounded-lg border border-slate-200 focus:outline-hidden focus:ring-2 focus:ring-blue-500/20 focus:border-blue-500 focus:bg-white appearance-none cursor-pointer transition-all">
                         <option value="">Select owner account</option>
-                        {ownerAccountOptions.map((acc) => (
-                          <option key={acc.id} value={acc.id}>{acc.name}</option>
-                        ))}
+                        {ownerPrivateAccounts.map((account) => {
+                          const id = (account as any).id || (account as any).accountId || '';
+                          const name = (account as any).name || (account as any).accountName || (account as any).type || 'Unnamed owner account';
+                          const key = id || name;
+                          return (
+                            <option key={key} value={id}>
+                              {name}
+                            </option>
+                          );
+                        })}
                       </select>
                     </div>
                   </div>
@@ -916,62 +1003,15 @@ export default function AddEditTransactionModal({
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <div>
-                    <p className="text-[10px] font-semibold uppercase tracking-[0.3em] text-slate-500">Staff sign</p>
-                    <p className="mt-1 text-xs text-slate-500">Pick a saved sign or add a new one.</p>
-                  </div>
-                  <div className="rounded-full bg-white px-2.5 py-1 text-[11px] font-semibold text-slate-500 shadow-sm">
-                    {staffSign || 'None'}
-                  </div>
-                </div>
-
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {staffSignOptions.map((option) => (
-                    <button
-                      key={option}
-                      type="button"
-                      onClick={() => {
-                        setStaffSign(option);
-                        persistStaffSignState(staffSignOptions, option);
-                      }}
-                      disabled={isSubmitting}
-                      className={`rounded-full px-3 py-1.5 text-xs font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-70 ${staffSign === option ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'}`}
-                    >
-                      {option}
-                    </button>
-                  ))}
-                  <button
-                    type="button"
-                    onClick={() => setShowStaffSignInput((current) => !current)}
-                    disabled={isSubmitting}
-                    className="rounded-full border border-dashed border-slate-300 bg-white px-3 py-1.5 text-xs font-semibold text-slate-600 transition-all hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-70"
-                  >
-                    + Add New
-                  </button>
-                </div>
-
-                {showStaffSignInput && (
-                  <div className="mt-3 flex gap-2">
-                    <input
-                      value={staffSignInput}
-                      onChange={(e) => setStaffSignInput(e.target.value.toUpperCase())}
-                      placeholder="Type sign"
-                      disabled={isSubmitting}
-                      className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500/20"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => saveStaffSign(staffSignInput)}
-                      disabled={isSubmitting || !staffSignInput.trim()}
-                      className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-70"
-                    >
-                      Save
-                    </button>
-                  </div>
-                )}
-              </div>
+              <StaffSignPicker
+                value={staffSign}
+                options={staffSignOptions}
+                disabled={isSubmitting}
+                onSelect={(option) => {
+                  updateStaffSignOptions(option);
+                }}
+                onSave={(value) => saveStaffSign(value)}
+              />
 
               <div>
                 <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">Remark</label>

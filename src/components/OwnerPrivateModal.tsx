@@ -15,11 +15,12 @@ interface Props {
   data: { accounts: PrivateAccount[]; transactions: PrivateTransaction[] } | null;
   businessTransactions?: Transaction[];
   onSave: (data: { accounts: PrivateAccount[]; transactions: PrivateTransaction[] }) => void;
+  onDataChange?: (data: { accounts: PrivateAccount[]; transactions: PrivateTransaction[] }) => void;
   onChangePasscode?: (currentPass: string, newPass: string) => Promise<boolean>;
   onLockNow?: () => void;
 }
 
-export default function OwnerPrivateModal({ isOpen, onClose, data, businessTransactions, onSave, onChangePasscode, onLockNow }: Props) {
+export default function OwnerPrivateModal({ isOpen, onClose, data, businessTransactions, onSave, onDataChange, onChangePasscode, onLockNow }: Props) {
   const {
     activeTab,
     setActiveTab,
@@ -88,6 +89,7 @@ export default function OwnerPrivateModal({ isOpen, onClose, data, businessTrans
         )}
 
         {activeTab === 'transactions' && (
+          
           <TransactionsTab
             transactions={filteredTransactions}
             accountLookup={accountLookup}

@@ -80,5 +80,6 @@ export interface PrivateTransaction {
   type: string; // Income | Expense | Transfer
   amount: number;
   accountId: string;
+  sourceTransactionId?: string;
   remark?: string;
 }
